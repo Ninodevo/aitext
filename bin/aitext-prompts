@@ -1,0 +1,231 @@
+#!/usr/bin/env bash
+# aitext-prompts — manage the prompt files behind the aitext hotkeys.
+#
+#   aitext-prompts                     list every mode
+#   aitext-prompts show <mode>         print the prompt file
+#   aitext-prompts edit <mode>         open it in $EDITOR
+#   aitext-prompts test <mode> [text]  run text through it, show before/after
+#   aitext-prompts set <mode> <key> <value>
+#                                      change a front-matter key
+#                                      (model|temperature|output|provider|sounds)
+#   aitext-prompts new <mode> [Menu Name] [combo]
+#                                      scaffold prompt + Quick Action + hotkey
+#   aitext-prompts rm <mode> [--keep-prompt]
+#                                      remove hotkey, Quick Action, prompt file
+#
+# The hotkey list lives in ~/.config/aitext/hotkeys.conf — new/rm keep it in
+# sync, so re-running install.sh reproduces exactly what you have now.
+
+set -uo pipefail
+
+CONF_DIR="$HOME/.config/aitext"
+PROMPT_DIR="$CONF_DIR/prompts"
+MANIFEST="$CONF_DIR/hotkeys.conf"
+
+die()  { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m!\033[0m %s\n' "$*"; }
+
+need_prompt() {
+  [ -f "$PROMPT_DIR/$1.md" ] || die "no prompt '$1' — see: aitext-prompts"
+}
+
+# mode|name|key rows, comments and blanks stripped
+rows() { [ -f "$MANIFEST" ] && grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$MANIFEST"; }
+
+name_for() {
+  local want="$1" mode name key
+  while IFS='|' read -r mode name key; do
+    [ "$mode" = "$want" ] && { printf '%s' "$name"; return 0; }
+  done < <(rows)
+  return 1
+}
+
+field() {  # field <mode> <key>
+  sed -n "/^---[[:space:]]*$/q; s/^$2:[[:space:]]*//p" "$PROMPT_DIR/$1.md" 2>/dev/null | head -1
+}
+
+body_first_line() {
+  awk 'f{print; exit} /^---[[:space:]]*$/{f=1}' "$PROMPT_DIR/$1.md" 2>/dev/null
+}
+
+cmd_list() {
+  local f mode model out line
+  printf '\033[1m%-9s %-16s %-10s %s\033[0m\n' MODE MODEL OUTPUT "PROMPT"
+  for f in "$PROMPT_DIR"/*.md; do
+    [ -f "$f" ] || continue
+    mode=$(basename "$f" .md)
+    model=$(field "$mode" model); model=${model:-(default)}
+    out=$(field "$mode" output);  out=${out:-replace}
+    line=$(body_first_line "$mode")
+    [ ${#line} -gt 46 ] && line="${line:0:45}…"
+    printf '%-9s %-16s %-10s %s\n' "$mode" "$model" "$out" "$line"
+  done
+  printf '\n\033[90mFiles: %s\033[0m\n' "$PROMPT_DIR"
+}
+
+cmd_show() { need_prompt "$1"; cat "$PROMPT_DIR/$1.md"; }
+
+cmd_edit() {
+  need_prompt "$1"
+  local ed="${EDITOR:-}"
+  [ -n "$ed" ] || ed="open -t"
+  $ed "$PROMPT_DIR/$1.md"
+}
+
+cmd_test() {
+  local mode="${1:-}"; shift 2>/dev/null || true
+  [ -n "$mode" ] || die "usage: aitext-prompts test <mode> [text]"
+  need_prompt "$mode"
+  local text="$*"
+  [ -n "$text" ] || text="we was going to the store yesterday and buyed some stuff, it was quite good honestly"
+  printf '\033[90min:\033[0m  %s\n' "$text"
+  local outmode; outmode=$(field "$mode" output); outmode=${outmode:-replace}
+  local sentinel=""
+  if [ "$outmode" = "clipboard" ]; then
+    sentinel="aitext-test-sentinel-$$"; printf '%s' "$sentinel" | pbcopy
+  fi
+  local out; out=$(printf '%s' "$text" | "$HOME/.local/bin/aitext" "$mode")
+  case "$outmode" in
+    clipboard)
+      if [ "$(pbpaste)" = "$sentinel" ]; then
+        warn "the clipboard was not updated — the call failed; an alert dialog should say why"
+      else
+        printf '\033[90mout:\033[0m (sent to the clipboard)\n'
+        printf '\033[90mclipboard:\033[0m %s\n' "$(pbpaste)"
+      fi ;;
+    notify)
+      printf '\033[90mout:\033[0m (shown in a dialog — check your screen)\n' ;;
+    *)
+      printf '\033[90mout:\033[0m %s\n' "$out"
+      if [ "$out" = "$text" ]; then
+        warn "output identical to input — an alert dialog should say why (missing key, bad model, network)"
+      fi ;;
+  esac
+}
+
+cmd_set() {
+  local mode="${1:-}" key="${2:-}" val="${3:-}"
+  [ -n "$mode" ] && [ -n "$key" ] && [ -n "$val" ] || die "usage: aitext-prompts set <mode> <key> <value>"
+  need_prompt "$mode"
+  case "$key" in
+    model|temperature|output|provider|sounds) ;;
+    *) die "key must be one of: model temperature output provider sounds" ;;
+  esac
+  case "$key" in
+    output)   case "$val" in replace|append|clipboard|notify) ;; *) die "output must be replace|append|clipboard|notify" ;; esac ;;
+    provider) case "$val" in openai|anthropic) ;; *) die "provider must be openai|anthropic" ;; esac ;;
+    sounds)   case "$val" in on|off) ;; *) die "sounds must be on|off" ;; esac ;;
+    temperature) printf '%s' "$val" | grep -qE '^([01](\.[0-9]+)?|2(\.0+)?)$' \
+                   || die "temperature must be a number from 0 to 2" ;;
+  esac
+
+  local f="$PROMPT_DIR/$mode.md" tmp; tmp=$(mktemp)
+  if grep -q "^$key:" "$f" && [ "$(awk "/^---[[:space:]]*\$/{exit} /^$key:/{print NR}" "$f")" != "" ]; then
+    awk -v k="$key" -v v="$val" '
+      !done && /^---[[:space:]]*$/ { done=1 }
+      !done && $0 ~ "^"k":" { print k": "v; next }
+      { print }' "$f" > "$tmp"
+  else
+    awk -v k="$key" -v v="$val" '
+      !ins && /^---[[:space:]]*$/ { print k": "v; ins=1 }
+      { print }' "$f" > "$tmp"
+  fi
+  mv "$tmp" "$f"
+  ok "$mode: $key = $val"
+  if [ "$key" = "temperature" ] && [ "$(field "$mode" provider)" = "anthropic" ]; then
+    warn "this prompt uses provider: anthropic — temperature is ignored there"
+  fi
+}
+
+cmd_new() {
+  local mode="${1:-}" name="${2:-}" combo="${3:-}"
+  [ -n "$mode" ] || die "usage: aitext-prompts new <mode> [Menu Name] [combo]"
+  printf '%s' "$mode" | grep -qE '^[a-z0-9_-]+$' || die "mode must be lowercase letters, digits, - or _"
+  [ -f "$PROMPT_DIR/$mode.md" ] && die "prompt '$mode' already exists — edit it with: aitext-prompts edit $mode"
+  [ -n "$name" ] || name="AI $(printf '%s' "$mode" | tr '_-' '  ' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1')"
+  case "$name" in
+    *[\&\<\>\|]*|*"'"*) die "menu name cannot contain & < > | or ' (got '$name')" ;;
+  esac
+  name_for "$mode" >/dev/null 2>&1 && die "'$mode' is already in $MANIFEST"
+
+  mkdir -p "$PROMPT_DIR"
+  cat > "$PROMPT_DIR/$mode.md" <<EOF
+temperature: 0.3
+---
+TODO: write the system prompt for '$mode' here. Describe the transformation to
+apply to the selected text. The rule about returning only the resulting text is
+appended automatically — you don't need to repeat it.
+EOF
+  ok "wrote $PROMPT_DIR/$mode.md"
+
+  printf '%s|%s|%s\n' "$mode" "$name" "${combo:-}" >> "$MANIFEST"
+  ok "added to $MANIFEST"
+
+  aitext-service build "$mode" "$name" || die "could not build the Quick Action"
+  ok "built Quick Action '$name'"
+
+  if [ -n "$combo" ]; then
+    if aitext-keys set "$mode" "$combo" >/dev/null 2>&1; then
+      ok "bound $combo"
+    else
+      warn "could not bind '$combo' — set it with: aitext-keys set $mode <combo>"
+      # blank the manifest field so install.sh never writes the raw text to pbs
+      local tmpb; tmpb=$(mktemp)
+      awk -F'|' -v m="$mode" -v n="$name" '$1==m {print m"|"n"|"; next} {print}' "$MANIFEST" > "$tmpb" && mv "$tmpb" "$MANIFEST"
+    fi
+    # store the normalised form back in the manifest
+    local real; real=$(/usr/libexec/PlistBuddy -c \
+      "Print :NSServicesStatus:'(null) - $name - runWorkflowAsService':key_equivalent" \
+      "$HOME/Library/Preferences/pbs.plist" 2>/dev/null)
+    if [ -n "$real" ]; then
+      local tmp; tmp=$(mktemp)
+      awk -F'|' -v m="$mode" -v n="$name" -v k="$real" \
+        '$1==m {print m"|"n"|"k; next} {print}' "$MANIFEST" > "$tmp" && mv "$tmp" "$MANIFEST"
+    fi
+  else
+    warn "no shortcut yet — add one with: aitext-keys set $mode shift+ctrl+<letter>"
+  fi
+
+  printf '\nNext: \033[1maitext-prompts edit %s\033[0m, then \033[1maitext-prompts test %s\033[0m\n' "$mode" "$mode"
+}
+
+cmd_rm() {
+  local mode="" keep=0 a
+  for a in "$@"; do
+    case "$a" in
+      --keep-prompt) keep=1 ;;
+      *) [ -z "$mode" ] && mode="$a" || die "unexpected argument '$a'" ;;
+    esac
+  done
+  [ -n "$mode" ] || die "usage: aitext-prompts rm <mode> [--keep-prompt]"
+
+  local name; name=$(name_for "$mode" 2>/dev/null) || name=""
+  if [ -n "$name" ]; then
+    aitext-keys unset "$mode" >/dev/null 2>&1 && ok "removed shortcut"
+    aitext-service remove "$name" && ok "removed Quick Action '$name'"
+    local tmp; tmp=$(mktemp)
+    awk -F'|' -v m="$mode" '$1!=m' "$MANIFEST" > "$tmp" && mv "$tmp" "$MANIFEST"
+    ok "removed from $MANIFEST"
+  else
+    warn "'$mode' was not in $MANIFEST — nothing to unbind"
+  fi
+
+  if [ $keep -eq 1 ]; then
+    printf '\033[90m  kept %s/%s.md\033[0m\n' "$PROMPT_DIR" "$mode"
+  elif [ -f "$PROMPT_DIR/$mode.md" ]; then
+    rm -f "$PROMPT_DIR/$mode.md"; ok "deleted $PROMPT_DIR/$mode.md"
+  fi
+}
+
+case "${1:-list}" in
+  list|ls|"")      cmd_list ;;
+  show|cat)        shift; [ $# -ge 1 ] || die "usage: aitext-prompts show <mode>"; cmd_show "$1" ;;
+  edit)            shift; [ $# -ge 1 ] || die "usage: aitext-prompts edit <mode>"; cmd_edit "$1" ;;
+  test|try)        shift; cmd_test "$@" ;;
+  set)             shift; cmd_set "$@" ;;
+  new|add)         shift; cmd_new "$@" ;;
+  rm|remove|del)   shift; cmd_rm "$@" ;;
+  -h|--help|help)  awk 'NR>1 && !/^#/{exit} NR>1{sub(/^# ?/,""); print}' "$0" ;;
+  *)               die "unknown command '$1' (try: aitext-prompts --help)" ;;
+esac

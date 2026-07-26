@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# aitext-config — global settings for aitext (~/.config/aitext/config).
+#
+#   aitext-config                  show every setting and where it came from
+#   aitext-config sounds off       shorthand for: set sounds off
+#   aitext-config get <key>
+#   aitext-config set <key> <value>
+#   aitext-config test             play the three sounds so you can hear them
+#
+# Keys:
+#   sounds         on | off        audio cue on start, finish and failure
+#   sound_start    path to .aiff   played when the API call begins
+#   sound_done     path to .aiff   played when the result is ready
+#   sound_error    path to .aiff   played when something failed
+#   sound_volume   0.0 – 1.0
+#
+# Precedence: $AITEXT_SOUNDS  >  a `sounds:` line in the prompt file  >  this file.
+
+set -uo pipefail
+
+CONF_DIR="${AITEXT_CONF_DIR:-$HOME/.config/aitext}"
+CONF_FILE="$CONF_DIR/config"
+
+die()  { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
+
+DEFAULT_sounds=on
+DEFAULT_sound_start=/System/Library/Sounds/Tink.aiff
+DEFAULT_sound_done=/System/Library/Sounds/Pop.aiff
+DEFAULT_sound_error=/System/Library/Sounds/Basso.aiff
+DEFAULT_sound_volume=0.35
+KEYS="sounds sound_start sound_done sound_error sound_volume"
+
+default_for() { eval "printf '%s' \"\${DEFAULT_$1}\""; }
+
+raw_get() {
+  [ -f "$CONF_FILE" ] || return 1
+  local v; v=$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$CONF_FILE" | tail -1)
+  [ -n "$v" ] || return 1
+  printf '%s' "$v"
+}
+
+get() { raw_get "$1" 2>/dev/null || default_for "$1"; }
+
+valid_key() {
+  case " $KEYS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
+validate() {  # validate <key> <value>
+  case "$1" in
+    sounds)
+      case "$2" in on|off) ;; *) die "sounds must be 'on' or 'off'" ;; esac ;;
+    sound_start|sound_done|sound_error)
+      [ -f "$2" ] || die "no such file: $2   (try: ls /System/Library/Sounds)" ;;
+    sound_volume)
+      printf '%s' "$2" | grep -qE '^(0(\.[0-9]+)?|1(\.0+)?)$' || die "sound_volume must be between 0.0 and 1.0" ;;
+  esac
+}
+
+cmd_set() {
+  local key="${1:-}" val="${2:-}"
+  [ -n "$key" ] && [ -n "$val" ] || die "usage: aitext-config set <key> <value>"
+  valid_key "$key" || die "unknown key '$key' — valid: $KEYS"
+  validate "$key" "$val"
+
+  mkdir -p "$CONF_DIR"
+  if [ ! -f "$CONF_FILE" ]; then
+    printf '# aitext settings — see: aitext-config --help\n' > "$CONF_FILE"
+  fi
+  if grep -qE "^[[:space:]]*$key[[:space:]]*=" "$CONF_FILE"; then
+    local tmp; tmp=$(mktemp)
+    awk -v k="$key" -v v="$val" '
+      $0 ~ "^[[:space:]]*"k"[[:space:]]*=" { print k"="v; done=1; next }
+      { print }
+      END { if (!done) print k"="v }' "$CONF_FILE" > "$tmp" && mv "$tmp" "$CONF_FILE"
+  else
+    printf '%s=%s\n' "$key" "$val" >> "$CONF_FILE"
+  fi
+  ok "$key = $val"
+}
+
+cmd_get() {
+  local key="${1:-}"
+  [ -n "$key" ] || die "usage: aitext-config get <key>"
+  valid_key "$key" || die "unknown key '$key' — valid: $KEYS"
+  get "$key"; echo
+}
+
+cmd_list() {
+  printf '\033[1m%-14s %-38s %s\033[0m\n' KEY VALUE SOURCE
+  local k v src
+  for k in $KEYS; do
+    if v=$(raw_get "$k" 2>/dev/null); then src="config file"; else v=$(default_for "$k"); src="default"; fi
+    [ "$k" = "sounds" ] && [ -n "${AITEXT_SOUNDS:-}" ] && { v="$AITEXT_SOUNDS"; src="\$AITEXT_SOUNDS"; }
+    printf '%-14s %-38s \033[90m%s\033[0m\n' "$k" "$v" "$src"
+  done
+  printf '\n\033[90mFile: %s%s\033[0m\n' "$CONF_FILE" \
+    "$([ -f "$CONF_FILE" ] || printf ' (not created yet — all defaults)')"
+  printf '\033[90mPer-prompt override: add a `sounds: off` line to a prompt file.\033[0m\n'
+}
+
+cmd_test() {
+  local vol; vol=$(get sound_volume)
+  local k f
+  for k in sound_start sound_done sound_error; do
+    f=$(get "$k")
+    printf '  %-12s %s\n' "$k" "$f"
+    if [ -f "$f" ]; then afplay -v "$vol" "$f" 2>/dev/null; sleep 0.4; else printf '    \033[31mmissing\033[0m\n'; fi
+  done
+  [ "$(get sounds)" = "on" ] || printf '\n\033[33m!\033[0m sounds are currently OFF — aitext will stay silent.\n'
+}
+
+case "${1:-list}" in
+  list|ls|"")     cmd_list ;;
+  get)            shift; cmd_get "$@" ;;
+  set)            shift; cmd_set "$@" ;;
+  test)           cmd_test ;;
+  sounds)         shift; [ $# -ge 1 ] || die "usage: aitext-config sounds on|off"; cmd_set sounds "$1" ;;
+  -h|--help|help) awk 'NR>1 && !/^#/{exit} NR>1{sub(/^# ?/,""); print}' "$0" ;;
+  *)              die "unknown command '$1' (try: aitext-config --help)" ;;
+esac

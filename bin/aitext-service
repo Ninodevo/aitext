@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# aitext-service — create or remove a single aitext Quick Action bundle.
+#
+#   aitext-service build <mode> <Menu Name>
+#   aitext-service remove <Menu Name>
+#
+# Used by install.sh and aitext-prompts so the bundle format lives in one place.
+
+set -uo pipefail
+
+SERVICES="$HOME/Library/Services"
+ACTION_BUNDLE="/System/Library/Automator/Run Shell Script.action"
+
+die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+
+build() {
+  local mode="${1:-}" name="${2:-}"
+  [ -n "$mode" ] && [ -n "$name" ] || die "usage: aitext-service build <mode> <Menu Name>"
+  printf '%s' "$mode" | grep -qE '^[a-z0-9_-]+$' \
+    || die "mode must be lowercase letters, digits, - or _ (got '$mode')"
+  case "$name" in
+    *[\&\<\>\|]*|*"'"*) die "menu name cannot contain & < > | or ' (got '$name')" ;;
+  esac
+  [ -d "$ACTION_BUNDLE" ] || die "missing $ACTION_BUNDLE"
+
+  local w="$SERVICES/$name.workflow" c
+  c="$w/Contents"
+  rm -rf "$w"; mkdir -p "$c" || die "cannot write to $SERVICES"
+
+  cat > "$c/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>NSServices</key><array><dict>
+    <key>NSMenuItem</key><dict><key>default</key><string>$name</string></dict>
+    <key>NSMessage</key><string>runWorkflowAsService</string>
+    <key>NSSendTypes</key><array><string>NSStringPboardType</string></array>
+    <key>NSReturnTypes</key><array><string>NSStringPboardType</string></array>
+  </dict></array>
+</dict></plist>
+PLIST
+
+  cat > "$c/document.wflow" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>AMApplicationBuild</key><string>528</string>
+  <key>AMApplicationVersion</key><string>2.10</string>
+  <key>AMDocumentVersion</key><string>2</string>
+  <key>actions</key><array><dict>
+    <key>action</key><dict>
+      <key>AMActionVersion</key><string>2.0.3</string>
+      <key>AMParameterProperties</key><dict>
+        <key>COMMAND_STRING</key><dict/>
+        <key>CheckedForUserDefaultShell</key><dict/>
+        <key>inputMethod</key><dict/>
+        <key>shell</key><dict/>
+        <key>source</key><dict/>
+      </dict>
+      <key>ActionBundlePath</key><string>$ACTION_BUNDLE</string>
+      <key>ActionName</key><string>Run Shell Script</string>
+      <key>ActionParameters</key><dict>
+        <key>COMMAND_STRING</key><string>exec "\$HOME/.local/bin/aitext" $mode</string>
+        <key>CheckedForUserDefaultShell</key><true/>
+        <key>inputMethod</key><integer>0</integer>
+        <key>shell</key><string>/bin/bash</string>
+        <key>source</key><string></string>
+      </dict>
+      <key>BundleIdentifier</key><string>com.apple.RunShellScript</string>
+      <key>CFBundleVersion</key><string>2.0.3</string>
+      <key>CanShowSelectedItemsWhenRun</key><false/>
+      <key>CanShowWhenRun</key><true/>
+      <key>Category</key><array><string>AMCategoryUtilities</string></array>
+      <key>Class Name</key><string>RunShellScriptAction</string>
+      <key>InputUUID</key><string>$(uuidgen)</string>
+      <key>OutputUUID</key><string>$(uuidgen)</string>
+      <key>UUID</key><string>$(uuidgen)</string>
+      <key>UnlocalizedApplications</key><array><string>Automator</string></array>
+      <key>arguments</key><dict/>
+      <key>isViewVisible</key><integer>1</integer>
+      <key>location</key><string>309.000000:253.000000</string>
+    </dict>
+    <key>isViewVisible</key><integer>1</integer>
+  </dict></array>
+  <key>connectors</key><dict/>
+  <key>workflowMetaData</key><dict>
+    <key>serviceInputTypeIdentifier</key><string>com.apple.Automator.text</string>
+    <key>serviceOutputTypeIdentifier</key><string>com.apple.Automator.text</string>
+    <key>serviceProcessesInput</key><integer>1</integer>
+    <key>serviceApplicationBundleID</key><string></string>
+    <key>workflowTypeIdentifier</key><string>com.apple.Automator.servicesMenu</string>
+  </dict>
+</dict></plist>
+PLIST
+
+  if ! plutil -lint "$c/Info.plist" >/dev/null 2>&1 || ! plutil -lint "$c/document.wflow" >/dev/null 2>&1; then
+    rm -rf "$w"; die "generated a malformed plist for '$name' — not installed"
+  fi
+  /System/Library/CoreServices/pbs -flush 2>/dev/null
+}
+
+remove() {
+  local name="${1:-}"
+  [ -n "$name" ] || die "usage: aitext-service remove <Menu Name>"
+  rm -rf "$SERVICES/$name.workflow"
+  /System/Library/CoreServices/pbs -flush 2>/dev/null
+}
+
+case "${1:-}" in
+  build)  shift; build "$@" ;;
+  remove) shift; remove "$@" ;;
+  *) die "usage: aitext-service build <mode> <Menu Name> | remove <Menu Name>" ;;
+esac

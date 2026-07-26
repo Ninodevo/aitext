@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# aitext-keys — inspect and change the hotkeys bound to aitext Quick Actions.
+#
+#   aitext-keys                 list current bindings
+#   aitext-keys set <mode> <combo>
+#   aitext-keys unset <mode>    remove the shortcut (Quick Action stays)
+#
+# <combo> accepts any of:  shift+ctrl+j   ⇧⌃J   ctrl-shift-j   '$^j'
+# Modifiers: cmd/command, shift, ctrl/control, opt/option/alt.
+
+set -uo pipefail
+
+PB=/usr/libexec/PlistBuddy
+PLIST="$HOME/Library/Preferences/pbs.plist"
+SERVICES="$HOME/Library/Services"
+RESERVED="a b e f n p v"
+
+die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+keypath() { printf ":NSServicesStatus:'(null) - %s - runWorkflowAsService'" "$1"; }
+
+rows() {
+  local w cmd mode name
+  for w in "$SERVICES"/*.workflow; do
+    [ -d "$w" ] || continue
+    cmd=$("$PB" -c "Print :actions:0:action:ActionParameters:COMMAND_STRING" \
+          "$w/Contents/document.wflow" 2>/dev/null) || continue
+    case "$cmd" in *"/aitext"*) ;; *) continue ;; esac
+    mode=${cmd##* }
+    name=$(basename "$w" .workflow)
+    printf '%s\t%s\n' "$mode" "$name"
+  done | sort
+}
+
+name_for() {
+  local want="$1" mode name
+  while IFS=$'\t' read -r mode name; do
+    [ "$mode" = "$want" ] && { printf '%s' "$name"; return 0; }
+  done < <(rows)
+  return 1
+}
+
+get_key() { "$PB" -c "Print $(keypath "$1"):key_equivalent" "$PLIST" 2>/dev/null; }
+
+pretty() {
+  printf '%s' "$1" \
+    | sed 's/@/⌘/g; s/\$/⇧/g; s/\^/⌃/g; s/~/⌥/g' \
+    | tr 'abcdefghijklmnopqrstuvwxyz' 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+}
+
+parse_combo() {
+  local raw="$1"
+  case "$raw" in
+    [@'$^~']*) if printf '%s' "$raw" | grep -qE '^[@$^~]+[a-z0-9]$'; then printf '%s' "$raw"; return 0; fi ;;
+  esac
+  local s
+  s=$(printf '%s' "$raw" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')
+  s=${s//⌘/cmd+}; s=${s//⇧/shift+}; s=${s//⌃/ctrl+}; s=${s//⌥/opt+}
+  s=${s//-/+}; s=${s//,/+}; s=${s// /+}
+  local cmd=0 sh=0 ct=0 op=0 letter="" part
+  local IFS='+'
+  for part in $s; do
+    case "$part" in
+      cmd|command|@)      cmd=1 ;;
+      shift|'$')          sh=1 ;;
+      ctrl|control|ctl|^) ct=1 ;;
+      opt|option|alt|'~') op=1 ;;
+      "")                 ;;
+      ?)                  letter="$part" ;;
+      *)                  die "don't understand '$part' in '$raw'" ;;
+    esac
+  done
+  [ -n "$letter" ] || die "no key letter in '$raw'"
+  printf '%s' "$letter" | grep -qE '^[a-z0-9]$' || die "key must be a single letter or digit, got '$letter'"
+  [ $((cmd + sh + ct + op)) -gt 0 ] || die "need at least one modifier in '$raw'"
+  local out=""
+  [ $cmd -eq 1 ] && out="$out@"
+  [ $sh  -eq 1 ] && out="$out\$"
+  [ $ct  -eq 1 ] && out="$out^"
+  [ $op  -eq 1 ] && out="$out~"
+  printf '%s%s' "$out" "$letter"
+}
+
+flush() {
+  killall -u "$USER" cfprefsd 2>/dev/null
+  /System/Library/CoreServices/pbs -flush 2>/dev/null
+}
+
+cmd_list() {
+  local mode name key n=0
+  printf '\033[1m%-10s %-26s %s\033[0m\n' MODE "SERVICE" "SHORTCUT"
+  while IFS=$'\t' read -r mode name; do
+    key=$(get_key "$name")
+    if [ -n "$key" ]; then
+      printf '%-10s %-26s %s\n' "$mode" "$name" "$(pretty "$key")"
+    else
+      printf '%-10s %-26s \033[90m(none)\033[0m\n' "$mode" "$name"
+    fi
+    n=$((n + 1))
+  done < <(rows)
+  [ "$n" -gt 0 ] || echo "  no aitext Quick Actions found in $SERVICES"
+  printf '\n\033[90mReserved with ⇧⌃ (macOS text selection): %s\033[0m\n' "$(printf '%s' "$RESERVED" | tr 'a-z' 'A-Z')"
+}
+
+cmd_set() {
+  local mode="${1:-}" combo="${2:-}"
+  [ -n "$mode" ] && [ -n "$combo" ] || die "usage: aitext-keys set <mode> <combo>"
+  local name; name=$(name_for "$mode") || die "no Quick Action for mode '$mode' (see: aitext-keys)"
+  local key;  key=$(parse_combo "$combo") || exit 1
+  local letter=${key#"${key%?}"}
+  if [ "${key%?}" = "\$^" ] || [ "${key%?}" = "^\$" ]; then
+    case " $RESERVED " in
+      *" $letter "*) printf '\033[33m!\033[0m ⇧⌃%s is reserved by macOS for text selection — it will not fire in most apps.\n' \
+                       "$(printf '%s' "$letter" | tr 'a-z' 'A-Z')" ;;
+    esac
+  fi
+  local other
+  other=$("$PB" -c "Print :NSServicesStatus" "$PLIST" 2>/dev/null \
+          | grep -B20 "key_equivalent = $(printf '%s' "$key" | sed 's/[][\.*^$/]/\\&/g')\$" \
+          | grep -o "(null) - [^-]* - runWorkflowAsService" | tail -1 | sed 's/(null) - //;s/ - runWorkflowAsService//')
+  if [ -n "$other" ] && [ "$other" != "$name" ]; then
+    printf '\033[33m!\033[0m %s already uses %s — both will be ambiguous.\n' "$other" "$(pretty "$key")"
+  fi
+  local k; k=$(keypath "$name")
+  "$PB" -c "Delete $k" "$PLIST" >/dev/null 2>&1
+  "$PB" -c "Add $k dict" "$PLIST" >/dev/null 2>&1
+  "$PB" -c "Add $k:key_equivalent string $key" "$PLIST" >/dev/null 2>&1
+  "$PB" -c "Add $k:enabled_services_menu bool true" "$PLIST" >/dev/null 2>&1
+  "$PB" -c "Add $k:enabled_context_menu bool true" "$PLIST" >/dev/null 2>&1
+  "$PB" -c "Set :ServicesShortcutsPresent 1" "$PLIST" >/dev/null 2>&1 \
+    || "$PB" -c "Add :ServicesShortcutsPresent integer 1" "$PLIST" >/dev/null 2>&1
+  flush
+  printf '\033[32m✓\033[0m %s (%s) → %s\n' "$name" "$mode" "$(pretty "$key")"
+  printf '\033[90m  Note: re-running install.sh resets this unless you edit its MANIFEST.\033[0m\n'
+}
+
+cmd_unset() {
+  local mode="${1:-}"
+  [ -n "$mode" ] || die "usage: aitext-keys unset <mode>"
+  local name; name=$(name_for "$mode") || die "no Quick Action for mode '$mode'"
+  "$PB" -c "Delete $(keypath "$name")" "$PLIST" >/dev/null 2>&1
+  flush
+  printf '\033[32m✓\033[0m %s (%s) → no shortcut (still in the Services menu)\n' "$name" "$mode"
+}
+
+case "${1:-list}" in
+  list|ls|"")      cmd_list ;;
+  set)             shift; cmd_set "$@" ;;
+  unset|rm|delete) shift; cmd_unset "$@" ;;
+  -h|--help|help)  awk 'NR>1 && !/^#/{exit} NR>1{sub(/^# ?/,""); print}' "$0" ;;
+  *)               die "unknown command '$1' (try: aitext-keys --help)" ;;
+esac
