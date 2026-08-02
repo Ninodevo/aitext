@@ -96,14 +96,14 @@ PLIST
   if ! plutil -lint "$c/Info.plist" >/dev/null 2>&1 || ! plutil -lint "$c/document.wflow" >/dev/null 2>&1; then
     rm -rf "$w"; die "generated a malformed plist for '$name' — not installed"
   fi
-  /System/Library/CoreServices/pbs -flush 2>/dev/null
+  /System/Library/CoreServices/pbs -flush 2>/dev/null || true
 }
 
 remove() {
   local name="${1:-}"
   [ -n "$name" ] || die "usage: aitext-service remove <Menu Name>"
   rm -rf "$SERVICES/$name.workflow"
-  /System/Library/CoreServices/pbs -flush 2>/dev/null
+  /System/Library/CoreServices/pbs -flush 2>/dev/null || true
 }
 
 case "${1:-}" in

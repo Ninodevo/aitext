@@ -98,7 +98,7 @@ cmd_list() {
     n=$((n + 1))
   done < <(rows)
   [ "$n" -gt 0 ] || echo "  no aitext Quick Actions found in $SERVICES"
-  printf '\n\033[90mReserved with ⇧⌃ (macOS text selection): %s\033[0m\n' "$(printf '%s' "$RESERVED" | tr 'a-z' 'A-Z')"
+  printf '\n\033[90mReserved with ⇧⌃ (macOS text selection): %s\033[0m\n' "$(printf '%s' "$RESERVED" | tr '[:lower:]' '[:upper:]')"
 }
 
 cmd_set() {
@@ -110,7 +110,7 @@ cmd_set() {
   if [ "${key%?}" = "\$^" ] || [ "${key%?}" = "^\$" ]; then
     case " $RESERVED " in
       *" $letter "*) printf '\033[33m!\033[0m ⇧⌃%s is reserved by macOS for text selection — it will not fire in most apps.\n' \
-                       "$(printf '%s' "$letter" | tr 'a-z' 'A-Z')" ;;
+                       "$(printf '%s' "$letter" | tr '[:lower:]' '[:upper:]')" ;;
     esac
   fi
   local other

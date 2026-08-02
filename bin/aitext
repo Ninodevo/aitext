@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 # aitext <mode> — reads selected text on stdin, writes transformed text on stdout.
+#
+# Environment:
+#   AITEXT_BATCH=1        script mode: errors go to stderr (no dialogs), no
+#                         sounds, output modes are ignored (result → stdout),
+#                         and failures exit non-zero. Used by `aitext-prompts
+#                         doctor` and scripts.
+#   AITEXT_INSTRUCTION=…  answer an `ask:` prompt without showing the dialog
+#   AITEXT_SOUNDS=on|off  override the sound setting
 set -uo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
@@ -9,6 +17,7 @@ CONF_FILE="$CONF_DIR/config"
 PROMPT_DIR="${AITEXT_PROMPTS:-$CONF_DIR/prompts}"
 STATE_DIR="${AITEXT_STATE:-$HOME/.local/state/aitext}"
 PROMPT_FILE="$PROMPT_DIR/$MODE.md"
+BATCH="${AITEXT_BATCH:-}"
 
 TEXT=$(cat)
 
@@ -23,7 +32,9 @@ SND_START=$(conf sound_start /System/Library/Sounds/Tink.aiff)
 SND_DONE=$(conf sound_done /System/Library/Sounds/Pop.aiff)
 SND_ERROR=$(conf sound_error /System/Library/Sounds/Basso.aiff)
 SND_VOL=$(conf sound_volume 0.35)
+HISTORY=$(conf history on)
 [ -n "${AITEXT_SOUNDS:-}" ] && SOUNDS="$AITEXT_SOUNDS"
+[ -n "$BATCH" ] && SOUNDS=off
 
 play() {  # fire-and-forget; detached so it survives this script exiting
   case "$SOUNDS" in on|1|true|yes) ;; *) return 0 ;; esac
@@ -31,14 +42,41 @@ play() {  # fire-and-forget; detached so it survives this script exiting
   ( afplay -v "$SND_VOL" "$1" >/dev/null 2>&1 & ) >/dev/null 2>&1
 }
 
-alert() {
-  osascript - "$1" "$2" >/dev/null 2>&1 <<'APPLESCRIPT'
+alert() {  # alert <mode> <message>
+  if [ -n "$BATCH" ]; then
+    printf 'aitext %s: %s\n' "$1" "$2" >&2
+    return 0
+  fi
+  osascript - "aitext: $1" "$2" >/dev/null 2>&1 <<'APPLESCRIPT'
 on run argv
   display alert (item 1 of argv) message (item 2 of argv)
 end run
 APPLESCRIPT
 }
-die() { play "$SND_ERROR"; alert "aitext: $MODE" "$1"; printf '%s' "$TEXT"; exit 0; }
+
+# history: one JSON line per event, capped so it never grows unbounded.
+# Stores your text in plain text — disable with: aitext-config set history off
+hist() {  # hist <status> <output-or-error>
+  case "$HISTORY" in on|1|true|yes) ;; *) return 0 ;; esac
+  command -v jq >/dev/null 2>&1 || return 0
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  local f="$STATE_DIR/history.jsonl" n tmp
+  jq -cn --arg ts "$(date '+%Y-%m-%d %H:%M:%S')" --arg mode "$MODE" \
+     --arg status "$1" --arg input "$TEXT" --arg output "$2" \
+     '{ts:$ts, mode:$mode, status:$status, input:$input, output:$output}' >> "$f" 2>/dev/null
+  n=$(wc -l < "$f" 2>/dev/null | tr -d ' ')
+  if [ "${n:-0}" -gt 300 ]; then
+    tmp=$(mktemp) && tail -n 200 "$f" > "$tmp" && mv "$tmp" "$f"
+  fi
+}
+
+die() {
+  play "$SND_ERROR"
+  hist error "$1"
+  alert "$MODE" "$1"
+  printf '%s' "$TEXT"
+  if [ -n "$BATCH" ]; then exit 1; else exit 0; fi
+}
 
 command -v jq >/dev/null         || die "jq not found. Run: brew install jq"
 [[ -f "$PROMPT_FILE" ]]          || die "No prompt named '$MODE' in $PROMPT_DIR"
@@ -54,10 +92,36 @@ TEMP=$(field temperature)   # empty = omit from the request (use the API default
 [ -z "$TEMP" ] || printf '%s' "$TEMP" | grep -qE '^[0-9]+(\.[0-9]+)?$' \
   || die "temperature '$TEMP' in $PROMPT_FILE is not a number"
 OUT=$(field output);        OUT="${OUT:-replace}"
+BASE_URL=$(field base_url)
+ASK=$(field ask)
 
 # per-prompt sound override, then environment wins over everything
 PROMPT_SOUNDS=$(field sounds); [ -n "$PROMPT_SOUNDS" ] && SOUNDS="$PROMPT_SOUNDS"
 [ -n "${AITEXT_SOUNDS:-}" ] && SOUNDS="$AITEXT_SOUNDS"
+[ -n "$BATCH" ] && SOUNDS=off
+
+# Interactive prompt: an `ask:` line means the instruction comes from the user
+# at invocation time — via $AITEXT_INSTRUCTION, or a dialog. Cancelling the
+# dialog quietly hands the selection back untouched.
+if [ -n "$ASK" ]; then
+  INSTRUCTION="${AITEXT_INSTRUCTION:-}"
+  if [ -z "$INSTRUCTION" ]; then
+    [ -n "$BATCH" ] && die "interactive mode — set AITEXT_INSTRUCTION to use '$MODE' in scripts"
+    INSTRUCTION=$(osascript - "$ASK" 2>/dev/null <<'APPLESCRIPT'
+on run argv
+  try
+    set r to display dialog (item 1 of argv) default answer "" buttons {"Cancel", "Apply"} default button "Apply" with title "aitext"
+    if button returned of r is "Apply" then return text returned of r
+  end try
+end run
+APPLESCRIPT
+)
+    if [ -z "${INSTRUCTION//[[:space:]]/}" ]; then
+      printf '%s' "$TEXT"; exit 0   # cancelled
+    fi
+  fi
+  SYSTEM="Instruction from the user: $INSTRUCTION"$'\n\n'"$SYSTEM"
+fi
 
 SYSTEM="$SYSTEM"$'\n\n''Return ONLY the resulting text. No preamble, no explanation, no surrounding quotes, no code fences. Preserve the input language, line breaks, markdown, code blocks, URLs and proper nouns.'
 
@@ -68,19 +132,33 @@ play "$SND_START"
 case "$PROVIDER" in
   openai)
     MODEL="${MODEL:-gpt-5.4-nano}"
-    KEY=$(security find-generic-password -s OPENAI_API_KEY -w 2>/dev/null) \
-      || die "OPENAI_API_KEY not found in Keychain."
+    DEFAULT_BASE="https://api.openai.com/v1"
+    BASE="${BASE_URL:-$(conf openai_base_url "$DEFAULT_BASE")}"
+    BASE="${BASE%/}"
+    KEY=$(security find-generic-password -s OPENAI_API_KEY -w 2>/dev/null) || KEY=""
+    # A custom endpoint (Ollama, LM Studio, …) may not need a key; the real API does.
+    if [ -z "$KEY" ] && [ "$BASE" = "$DEFAULT_BASE" ]; then
+      die "OPENAI_API_KEY not found in Keychain."
+    fi
     REQ=$(jq -n --arg m "$MODEL" --arg s "$SYSTEM" --arg u "$TEXT" \
       '{model:$m, messages:[{role:"system",content:$s},{role:"user",content:$u}]}')
     # some models (e.g. gpt-5.6-luna) reject non-default temperature — only
     # send the field when the prompt file asks for one
     [ -n "$TEMP" ] && REQ=$(jq --argjson t "$TEMP" '. + {temperature:$t}' <<<"$REQ")
-    RESP=$(curl -sS --max-time 60 https://api.openai.com/v1/chat/completions \
-      --config <(printf 'header = "Authorization: Bearer %s"\n' "$KEY") \
-      -H "Content-Type: application/json" -d "$REQ") \
-      || die "Network error talking to OpenAI."
-    ERR=$(jq -r '.error.message // empty' <<<"$RESP"); [[ -z "$ERR" ]] || die "OpenAI: $ERR"
-    RESULT=$(jq -r '.choices[0].message.content // empty' <<<"$RESP")
+    if [ -n "$KEY" ]; then
+      RESP=$(curl -sS --max-time 60 "$BASE/chat/completions" \
+        --config <(printf 'header = "Authorization: Bearer %s"\n' "$KEY") \
+        -H "Content-Type: application/json" -d "$REQ") \
+        || die "Network error talking to $BASE."
+    else
+      RESP=$(curl -sS --max-time 60 "$BASE/chat/completions" \
+        -H "Content-Type: application/json" -d "$REQ") \
+        || die "Network error talking to $BASE."
+    fi
+    ERR=$(jq -r 'if (.error|type)=="object" then .error.message elif (.error|type)=="string" then .error else empty end' <<<"$RESP" 2>/dev/null) \
+      || die "Unparseable response from $BASE."
+    [[ -z "$ERR" ]] || die "API: $ERR"
+    RESULT=$(jq -r '.choices[0].message.content // empty' <<<"$RESP" 2>/dev/null)
     ;;
   anthropic)
     MODEL="${MODEL:-claude-haiku-4-5}"
@@ -93,8 +171,10 @@ case "$PROVIDER" in
       -H "anthropic-version: 2023-06-01" \
       -H "Content-Type: application/json" -d "$REQ") \
       || die "Network error talking to Anthropic."
-    ERR=$(jq -r '.error.message // empty' <<<"$RESP"); [[ -z "$ERR" ]] || die "Anthropic: $ERR"
-    RESULT=$(jq -r '[.content[]? | select(.type=="text") | .text] | join("")' <<<"$RESP")
+    ERR=$(jq -r '.error.message // empty' <<<"$RESP" 2>/dev/null) \
+      || die "Unparseable response from Anthropic."
+    [[ -z "$ERR" ]] || die "Anthropic: $ERR"
+    RESULT=$(jq -r '[.content[]? | select(.type=="text") | .text] | join("")' <<<"$RESP" 2>/dev/null)
     ;;
   *) die "Unknown provider '$PROVIDER' in $PROMPT_FILE" ;;
 esac
@@ -108,10 +188,13 @@ if [[ "$TEXT" != '```'* && "$RESULT" == '```'* && "$RESULT" == *'```' ]]; then
 fi
 
 play "$SND_DONE"
+hist ok "$RESULT"
+
+[ -n "$BATCH" ] && OUT=replace
 
 case "$OUT" in
   append)    printf '%s\n\n%s' "$TEXT" "$RESULT" ;;
   clipboard) printf '%s' "$RESULT" | pbcopy; printf '%s' "$TEXT" ;;
-  notify)    alert "aitext: $MODE" "$RESULT"; printf '%s' "$TEXT" ;;
+  notify)    alert "$MODE" "$RESULT"; printf '%s' "$TEXT" ;;
   *)         printf '%s' "$RESULT" ;;
 esac

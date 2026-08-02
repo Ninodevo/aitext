@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034  # DEFAULT_* vars are read via eval in default_for()
 # aitext-config — global settings for aitext (~/.config/aitext/config).
 #
 #   aitext-config                  show every setting and where it came from
@@ -13,6 +14,9 @@
 #   sound_done     path to .aiff   played when the result is ready
 #   sound_error    path to .aiff   played when something failed
 #   sound_volume   0.0 – 1.0
+#   history        on | off        log transforms for aitext-log (plain text!)
+#   openai_base_url  URL           OpenAI-compatible endpoint, e.g. a local
+#                                  Ollama: http://localhost:11434/v1
 #
 # Precedence: $AITEXT_SOUNDS  >  a `sounds:` line in the prompt file  >  this file.
 
@@ -29,7 +33,9 @@ DEFAULT_sound_start=/System/Library/Sounds/Tink.aiff
 DEFAULT_sound_done=/System/Library/Sounds/Pop.aiff
 DEFAULT_sound_error=/System/Library/Sounds/Basso.aiff
 DEFAULT_sound_volume=0.35
-KEYS="sounds sound_start sound_done sound_error sound_volume"
+DEFAULT_history=on
+DEFAULT_openai_base_url=https://api.openai.com/v1
+KEYS="sounds sound_start sound_done sound_error sound_volume history openai_base_url"
 
 default_for() { eval "printf '%s' \"\${DEFAULT_$1}\""; }
 
@@ -48,8 +54,10 @@ valid_key() {
 
 validate() {  # validate <key> <value>
   case "$1" in
-    sounds)
-      case "$2" in on|off) ;; *) die "sounds must be 'on' or 'off'" ;; esac ;;
+    sounds|history)
+      case "$2" in on|off) ;; *) die "$1 must be 'on' or 'off'" ;; esac ;;
+    openai_base_url)
+      printf '%s' "$2" | grep -qE '^https?://[^[:space:]]+$' || die "openai_base_url must be an http(s):// URL" ;;
     sound_start|sound_done|sound_error)
       [ -f "$2" ] || die "no such file: $2   (try: ls /System/Library/Sounds)" ;;
     sound_volume)
@@ -67,7 +75,7 @@ cmd_set() {
   if [ ! -f "$CONF_FILE" ]; then
     printf '# aitext settings — see: aitext-config --help\n' > "$CONF_FILE"
   fi
-  if grep -qE "^[[:space:]]*$key[[:space:]]*=" "$CONF_FILE"; then
+  if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$CONF_FILE"; then
     local tmp; tmp=$(mktemp)
     awk -v k="$key" -v v="$val" '
       $0 ~ "^[[:space:]]*"k"[[:space:]]*=" { print k"="v; done=1; next }
@@ -96,6 +104,7 @@ cmd_list() {
   done
   printf '\n\033[90mFile: %s%s\033[0m\n' "$CONF_FILE" \
     "$([ -f "$CONF_FILE" ] || printf ' (not created yet — all defaults)')"
+  # shellcheck disable=SC2016  # backticks here are literal markdown, not expansion
   printf '\033[90mPer-prompt override: add a `sounds: off` line to a prompt file.\033[0m\n'
 }
 

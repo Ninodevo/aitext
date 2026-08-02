@@ -1,8 +1,10 @@
 # aitext
 
+[![ci](https://github.com/Ninodevo/aitext/actions/workflows/ci.yml/badge.svg)](https://github.com/Ninodevo/aitext/actions/workflows/ci.yml)
+
 AI text transforms on a keyboard shortcut, anywhere in macOS.
 
-Select text in any app, press **⇧⌃G**, and the selection is replaced by a corrected version. ⌘Z undoes it as a single edit. Thirteen transforms ship by default — fix grammar, rewrite clearer, shorten, translate, summarize, draft a reply — and adding your own takes one command.
+Select text in any app, press **⇧⌃G**, and the selection is replaced by a corrected version. ⌘Z undoes it as a single edit. Fourteen transforms ship by default — fix grammar, rewrite clearer, shorten, translate, summarize, draft a reply, or press ⇧⌃I and type any instruction on the spot — and adding your own takes one command.
 
 No menu-bar app, no background daemon, no Electron. Each hotkey is a native macOS Quick Action that pipes your selection through a shell script and writes the result back.
 
@@ -22,7 +24,7 @@ cd aitext
 ./install.sh
 ```
 
-The installer checks prerequisites, writes the commands and prompts, builds all thirteen Quick Actions, assigns the shortcuts, prompts you for your API key in a native secure-input dialog, and finishes with a live API call to prove it works end to end.
+The installer checks prerequisites, writes the commands and prompts, builds all fourteen Quick Actions, assigns the shortcuts, prompts you for your API key in a native secure-input dialog, and finishes with a live API call to prove it works end to end.
 
 Your key goes to the **login Keychain** — never to a file in this repo, never to a dotfile, never into `ps` output. Re-running the installer is safe: prompts you've edited are kept unless you pass `--force`.
 
@@ -52,6 +54,7 @@ All shortcuts are **Shift + Control + letter**.
 | ⇧⌃S | Summarize | **appends** a TL;DR, keeps the original |
 | ⇧⌃Y | Draft a reply | **copies to clipboard**, selection untouched |
 | ⇧⌃X | Explain this | **shows a dialog**, selection untouched |
+| ⇧⌃I | **Ask** — type any instruction in a dialog | replaced |
 
 macOS reserves seven ⇧⌃ letters for text selection — **A B E F N P V** — so avoid those when adding your own. (Source: `StandardKeyBinding.dict` in AppKit.)
 
@@ -59,6 +62,7 @@ macOS reserves seven ⇧⌃ letters for text selection — **A B E F N P V** —
 
 ```bash
 aitext-prompts                              # list every mode: model, output, prompt
+aitext-prompts doctor                       # live-test every mode against its API
 aitext-prompts edit grammar                 # open a prompt in $EDITOR
 aitext-prompts test grammar                 # run sample text through it, see before/after
 aitext-prompts set tldr model gpt-5.4-mini  # change one front-matter key
@@ -73,7 +77,12 @@ aitext-config                               # settings and where each came from
 aitext-config sounds off                    # silence the audio cues
 aitext-config test                          # hear them
 
-echo "some text" | aitext grammar           # the dispatcher, standalone
+aitext-log                                  # recent transforms (undo beyond ⌘Z)
+aitext-log restore 1                        # put the latest ORIGINAL on the clipboard
+aitext-config set history off               # stop logging transforms
+
+echo "some text" | aitext grammar                    # the dispatcher, standalone
+echo "notes" | AITEXT_INSTRUCTION="to haiku" aitext ask   # scripted ask
 ```
 
 ## Writing prompts
@@ -95,6 +104,8 @@ author's voice — do not rewrite phrasing that is already correct.
 | `temperature` | `0`–`2`, OpenAI only; omit to use the API default | omitted |
 | `output` | `replace`, `append`, `clipboard`, `notify` | `replace` |
 | `sounds` | `on`, `off` — overrides the global setting | inherits |
+| `base_url` | any OpenAI-compatible endpoint (see below) | config / api.openai.com |
+| `ask` | a question — makes the mode interactive: a dialog collects the instruction at invocation time | — |
 
 Edits take effect on the next keypress — no reinstall. Every prompt gets this appended automatically, so you never repeat it:
 
@@ -124,6 +135,29 @@ Roughly, for a 200-word paragraph in and out (~350 input / ~270 output tokens):
 
 Nothing here is expensive enough to choose on price. Choose on instruction-following instead: the failure that actually costs you is a model ignoring "return only the text" and pasting *"Here's the corrected version:"* into your document.
 
+## Local models (optional)
+
+Any OpenAI-compatible server works — Ollama, LM Studio, OpenRouter. Point one prompt at it:
+
+```
+base_url: http://localhost:11434/v1
+model: llama3.1
+---
+Fix spelling and grammar. Change nothing else.
+```
+
+…or move every OpenAI-provider prompt at once:
+
+```bash
+aitext-config set openai_base_url http://localhost:11434/v1
+```
+
+With a custom endpoint no API key is required — your text never leaves the Mac. Run `aitext-prompts doctor` afterwards to confirm every mode still works.
+
+## History
+
+Every transform is logged to `~/.local/state/aitext/history.jsonl` (capped ~200 entries) so you can recover the original after ⌘Z is long gone: `aitext-log`, `aitext-log restore <n>`. **The log stores your text in plain text** — if you transform sensitive material, turn it off with `aitext-config set history off`.
+
 ## Anthropic (optional)
 
 `explain` uses Claude. Add a key, or point the prompt at OpenAI instead:
@@ -150,7 +184,7 @@ security add-generic-password -s ANTHROPIC_API_KEY -a "$USER" -w 'sk-ant-...' -U
 
 **Nothing appears under Services at all.** `/System/Library/CoreServices/pbs -flush`, then log out and back in. Electron apps (Slack, VS Code, Notion) cache the Services list longest.
 
-**The text comes back unchanged with an alert.** That's the safety net. The alert says why — usually a missing key, a model your account can't reach, or a `temperature` the model rejects.
+**The text comes back unchanged with an alert.** That's the safety net. The alert says why — usually a missing key, a model your account can't reach, or a `temperature` the model rejects. `aitext-prompts doctor` tests every mode in one go.
 
 **`jq not found`.** `brew install jq`. The dispatcher hardcodes a PATH because Automator runs with a minimal one.
 

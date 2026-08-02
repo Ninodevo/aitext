@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# aitext-log — browse the transform history (undo beyond ⌘Z).
+#
+#   aitext-log              list recent transforms, newest first
+#   aitext-log show <n>     full input and output of entry n (1 = newest)
+#   aitext-log copy <n>     put entry n's OUTPUT on the clipboard
+#   aitext-log restore <n>  put entry n's INPUT on the clipboard (the original)
+#   aitext-log clear        delete the history
+#
+# History is written by aitext on every call (capped at ~200 entries) and
+# stores your text in plain text. Turn it off: aitext-config set history off
+
+set -uo pipefail
+
+STATE_DIR="${AITEXT_STATE:-$HOME/.local/state/aitext}"
+HIST="$STATE_DIR/history.jsonl"
+
+die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+ok()  { printf '\033[32m✓\033[0m %s\n' "$*"; }
+
+have_history() { [ -s "$HIST" ]; }
+
+entry() {  # entry <n> — print the nth-newest JSON line
+  local n="$1"
+  printf '%s' "$n" | grep -qE '^[0-9]+$' || die "n must be a number (1 = newest)"
+  [ "$n" -ge 1 ] || die "n must be 1 or more"
+  local total; total=$(wc -l < "$HIST" | tr -d ' ')
+  [ "$n" -le "$total" ] || die "only $total entries (1 = newest)"
+  tail -n "$n" "$HIST" | head -1
+}
+
+cmd_list() {
+  have_history || { echo "No history yet — run a transform first. (File: $HIST)"; exit 0; }
+  printf '\033[1m%3s  %-19s %-9s %-4s %-34s %s\033[0m\n' N WHEN MODE OK INPUT OUTPUT
+  tail -n 20 "$HIST" | jq -r '[.ts, .mode, .status, .input, .output] | @tsv' \
+    | awk -F'\t' '{ lines[NR]=$0 } END { for (i=NR; i>=1; i--) print lines[i] }' \
+    | awk -F'\t' '{
+        gsub(/\\t/, " ", $4); gsub(/\\n/, " ", $4)
+        gsub(/\\t/, " ", $5); gsub(/\\n/, " ", $5)
+        inp = length($4) > 32 ? substr($4, 1, 31) "…" : $4
+        out = length($5) > 40 ? substr($5, 1, 39) "…" : $5
+        okc = ($3 == "ok") ? "✓" : "✗"
+        printf "%3d  %-19s %-9s %-4s %-34s %s\n", NR, $1, $2, okc, inp, out
+      }'
+  local total; total=$(wc -l < "$HIST" | tr -d ' ')
+  printf '\n\033[90m%s entries total. aitext-log show <n> for full text; restore <n> puts the original on the clipboard.\033[0m\n' "$total"
+}
+
+cmd_show() {
+  have_history || die "no history"
+  local e; e=$(entry "${1:-1}") || exit 1 || exit 1 || exit 1
+  printf '\033[1mwhen:\033[0m   %s\n' "$(jq -r '.ts'     <<<"$e")"
+  printf '\033[1mmode:\033[0m   %s\n' "$(jq -r '.mode'   <<<"$e")"
+  printf '\033[1mstatus:\033[0m %s\n' "$(jq -r '.status' <<<"$e")"
+  printf '\n\033[1m--- input ---\033[0m\n%s\n'  "$(jq -r '.input'  <<<"$e")"
+  printf '\n\033[1m--- output ---\033[0m\n%s\n' "$(jq -r '.output' <<<"$e")"
+}
+
+cmd_copy() {
+  have_history || die "no history"
+  local e; e=$(entry "${1:-1}")
+  [ "$(jq -r '.status' <<<"$e")" = "ok" ] || die "entry ${1:-1} is an error record — its 'output' is the error message"
+  jq -rj '.output' <<<"$e" | pbcopy
+  ok "output of entry ${1:-1} is on the clipboard"
+}
+
+cmd_restore() {
+  have_history || die "no history"
+  local e; e=$(entry "${1:-1}")
+  jq -rj '.input' <<<"$e" | pbcopy
+  ok "ORIGINAL input of entry ${1:-1} is on the clipboard — paste it wherever the text was"
+}
+
+cmd_clear() {
+  rm -f "$HIST"
+  ok "history cleared"
+}
+
+case "${1:-list}" in
+  list|ls|"")     cmd_list ;;
+  show)           shift; cmd_show "$@" ;;
+  copy)           shift; cmd_copy "$@" ;;
+  restore)        shift; cmd_restore "$@" ;;
+  clear)          cmd_clear ;;
+  -h|--help|help) awk 'NR>1 && !/^#/{exit} NR>1{sub(/^# ?/,""); print}' "$0" ;;
+  *)              die "unknown command '$1' (try: aitext-log --help)" ;;
+esac

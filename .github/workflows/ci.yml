@@ -1,0 +1,75 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck bin/*
+      - name: bash syntax
+        run: |
+          for f in bin/* install.sh; do bash -n "$f"; done
+      - name: installer is reproducible from sources
+        run: |
+          ./tools/build-installer.py
+          git diff --exit-code install.sh
+
+  install-test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: fresh install into an isolated HOME
+        run: |
+          FAKE="$RUNNER_TEMP/fakehome"
+          mkdir -p "$FAKE"
+          HOME="$FAKE" ./install.sh --no-shortcuts --no-key
+
+          tools=$(ls bin | wc -l | tr -d ' ')
+          modes=$(grep -cv -e '^\s*#' -e '^\s*$' hotkeys.conf | tr -d ' ')
+
+          test "$(ls "$FAKE/.local/bin" | wc -l | tr -d ' ')" -eq "$tools"
+          test "$(ls "$FAKE/.config/aitext/prompts" | wc -l | tr -d ' ')" -eq "$modes"
+          test "$(ls "$FAKE/Library/Services" | wc -l | tr -d ' ')" -eq "$modes"
+          test -f "$FAKE/.config/aitext/hotkeys.conf"
+          test -f "$FAKE/.config/aitext/config"
+
+      - name: installed prompts match the repo byte-for-byte
+        run: |
+          FAKE="$RUNNER_TEMP/fakehome"
+          for p in prompts/*.md; do
+            diff "$p" "$FAKE/.config/aitext/prompts/$(basename "$p")"
+          done
+
+      - name: generated Quick Actions are valid plists
+        run: |
+          FAKE="$RUNNER_TEMP/fakehome"
+          for w in "$FAKE/Library/Services/"*.workflow; do
+            plutil -lint "$w/Contents/Info.plist" > /dev/null
+            plutil -lint "$w/Contents/document.wflow" > /dev/null
+          done
+
+      - name: dispatcher fails closed without a key (batch mode)
+        run: |
+          FAKE="$RUNNER_TEMP/fakehome"
+          set +e
+          out=$(echo "sample text" | HOME="$FAKE" AITEXT_BATCH=1 "$FAKE/.local/bin/aitext" grammar 2>/dev/null)
+          rc=$?
+          set -e
+          # no API key on CI: must exit non-zero AND hand the input back untouched
+          test "$rc" -ne 0
+          test "$out" = "sample text"
+
+      - name: uninstall removes what it installed
+        run: |
+          FAKE="$RUNNER_TEMP/fakehome"
+          HOME="$FAKE" ./install.sh --uninstall
+          test "$(ls "$FAKE/.local/bin" 2>/dev/null | wc -l | tr -d ' ')" -eq 0
+          test "$(ls "$FAKE/Library/Services" 2>/dev/null | wc -l | tr -d ' ')" -eq 0
+          # user data survives uninstall by design
+          test -d "$FAKE/.config/aitext/prompts"

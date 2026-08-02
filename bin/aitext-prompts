@@ -12,6 +12,7 @@
 #                                      scaffold prompt + Quick Action + hotkey
 #   aitext-prompts rm <mode> [--keep-prompt]
 #                                      remove hotkey, Quick Action, prompt file
+#   aitext-prompts doctor              live-test every mode against its API
 #
 # The hotkey list lives in ~/.config/aitext/hotkeys.conf — new/rm keep it in
 # sync, so re-running install.sh reproduces exactly what you have now.
@@ -195,7 +196,7 @@ cmd_rm() {
   for a in "$@"; do
     case "$a" in
       --keep-prompt) keep=1 ;;
-      *) [ -z "$mode" ] && mode="$a" || die "unexpected argument '$a'" ;;
+      *) if [ -z "$mode" ]; then mode="$a"; else die "unexpected argument '$a'"; fi ;;
     esac
   done
   [ -n "$mode" ] || die "usage: aitext-prompts rm <mode> [--keep-prompt]"
@@ -218,6 +219,47 @@ cmd_rm() {
   fi
 }
 
+
+cmd_doctor() {
+  # Run every mode against its live API with a tiny input. Catches dead models,
+  # rejected parameters, bad keys — the failures that otherwise hide behind the
+  # "return the original text" safety net until you press the hotkey.
+  local sample="teh answr is 42"
+  local f mode provider model ask out err rc pass=0 fail=0 skip=0
+  printf '\033[1m%-9s %-10s %-18s %s\033[0m\n' MODE PROVIDER MODEL RESULT
+  for f in "$PROMPT_DIR"/*.md; do
+    [ -f "$f" ] || continue
+    mode=$(basename "$f" .md)
+    provider=$(field "$mode" provider); provider=${provider:-openai}
+    model=$(field "$mode" model)
+    [ -n "$model" ] || { [ "$provider" = "openai" ] && model="gpt-5.4-nano" || model="claude-haiku-4-5"; }
+    ask=$(field "$mode" ask)
+    if [ -n "$ask" ]; then
+      printf '%-9s %-10s %-18s \033[90mskipped (interactive — test by hotkey)\033[0m\n' "$mode" "$provider" "$model"
+      skip=$((skip+1)); continue
+    fi
+    if [ "$provider" = "anthropic" ] && ! security find-generic-password -s ANTHROPIC_API_KEY >/dev/null 2>&1; then
+      printf '%-9s %-10s %-18s \033[90mskipped (no ANTHROPIC_API_KEY)\033[0m\n' "$mode" "$provider" "$model"
+      skip=$((skip+1)); continue
+    fi
+    err=$(mktemp)
+    out=$(printf '%s' "$sample" | AITEXT_BATCH=1 "$HOME/.local/bin/aitext" "$mode" 2>"$err"); rc=$?
+    if [ $rc -eq 0 ] && [ -n "$out" ] && [ "$out" != "$sample" ]; then
+      printf '%-9s %-10s %-18s \033[32m✓\033[0m %s\n' "$mode" "$provider" "$model" "$(printf '%s' "$out" | head -1 | cut -c1-40)"
+      pass=$((pass+1))
+    elif [ $rc -eq 0 ]; then
+      printf '%-9s %-10s %-18s \033[33m?\033[0m output identical to input\n' "$mode" "$provider" "$model"
+      pass=$((pass+1))
+    else
+      printf '%-9s %-10s %-18s \033[31m✗\033[0m %s\n' "$mode" "$provider" "$model" "$(head -1 "$err" | sed "s/^aitext $mode: //" | cut -c1-60)"
+      fail=$((fail+1))
+    fi
+    rm -f "$err"
+  done
+  printf '\n%d ok, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
+  [ "$fail" -eq 0 ]
+}
+
 case "${1:-list}" in
   list|ls|"")      cmd_list ;;
   show|cat)        shift; [ $# -ge 1 ] || die "usage: aitext-prompts show <mode>"; cmd_show "$1" ;;
@@ -226,6 +268,7 @@ case "${1:-list}" in
   set)             shift; cmd_set "$@" ;;
   new|add)         shift; cmd_new "$@" ;;
   rm|remove|del)   shift; cmd_rm "$@" ;;
+  doctor|check)    cmd_doctor ;;
   -h|--help|help)  awk 'NR>1 && !/^#/{exit} NR>1{sub(/^# ?/,""); print}' "$0" ;;
   *)               die "unknown command '$1' (try: aitext-prompts --help)" ;;
 esac

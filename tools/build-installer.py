@@ -9,7 +9,7 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TOOLS = ("aitext", "aitext-config", "aitext-keys", "aitext-service", "aitext-prompts")
+TOOLS = ("aitext", "aitext-config", "aitext-keys", "aitext-log", "aitext-service", "aitext-prompts")
 
 
 def read(*parts):
@@ -131,7 +131,7 @@ if (( UNINSTALL )); then
     $PB -c "Delete :NSServicesStatus:'(null) - $name - runWorkflowAsService'" "$PBS_PLIST" >/dev/null 2>&1
   done < <(manifest_rows)
   ok "removed Quick Actions and their shortcuts"
-  rm -f "$BIN_DIR/aitext" "$BIN_DIR/aitext-config" "$BIN_DIR/aitext-keys" "$BIN_DIR/aitext-service" "$BIN_DIR/aitext-prompts"
+  rm -f "$BIN_DIR/aitext" "$BIN_DIR/aitext-config" "$BIN_DIR/aitext-keys" "$BIN_DIR/aitext-log" "$BIN_DIR/aitext-service" "$BIN_DIR/aitext-prompts"
   ok "removed the aitext commands"
   killall -u "$USER" cfprefsd 2>/dev/null
   /System/Library/CoreServices/pbs -flush 2>/dev/null
@@ -350,6 +350,7 @@ cat <<EOF
   ⌘Z undoes it as a single edit.
 
   Prompts:   aitext-prompts                  list every mode
+             aitext-prompts doctor           live-test every mode
              aitext-prompts edit grammar     open in \$EDITOR
              aitext-prompts test grammar     run sample text through it
              aitext-prompts new harsh "AI Make Blunt" shift+ctrl+j
@@ -358,6 +359,9 @@ cat <<EOF
   Sounds:    aitext-config                   show settings
              aitext-config sounds off        silence the cues
              aitext-config test              hear them
+
+  History:   aitext-log                      recent transforms (undo beyond ⌘Z)
+             aitext-config set history off   stop logging them
 
   Hotkeys:   aitext-keys                     list bindings
              aitext-keys set grammar shift+ctrl+j

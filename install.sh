@@ -65,6 +65,7 @@ hr|AI Translate to Croatian|$^h
 reply|AI Draft Reply|$^y
 explain|AI Explain This|$^x
 commit|AI Commit Message|$^m
+ask|AI Ask|$^i
 '
 
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
@@ -92,7 +93,7 @@ if (( UNINSTALL )); then
     $PB -c "Delete :NSServicesStatus:'(null) - $name - runWorkflowAsService'" "$PBS_PLIST" >/dev/null 2>&1
   done < <(manifest_rows)
   ok "removed Quick Actions and their shortcuts"
-  rm -f "$BIN_DIR/aitext" "$BIN_DIR/aitext-config" "$BIN_DIR/aitext-keys" "$BIN_DIR/aitext-service" "$BIN_DIR/aitext-prompts"
+  rm -f "$BIN_DIR/aitext" "$BIN_DIR/aitext-config" "$BIN_DIR/aitext-keys" "$BIN_DIR/aitext-log" "$BIN_DIR/aitext-service" "$BIN_DIR/aitext-prompts"
   ok "removed the aitext commands"
   killall -u "$USER" cfprefsd 2>/dev/null
   /System/Library/CoreServices/pbs -flush 2>/dev/null
@@ -139,6 +140,14 @@ mkdir -p "$BIN_DIR" "$PROMPT_DIR" "$STATE_DIR"
 cat > "$BIN_DIR/aitext" <<'AITEXT_EOF'
 #!/usr/bin/env bash
 # aitext <mode> — reads selected text on stdin, writes transformed text on stdout.
+#
+# Environment:
+#   AITEXT_BATCH=1        script mode: errors go to stderr (no dialogs), no
+#                         sounds, output modes are ignored (result → stdout),
+#                         and failures exit non-zero. Used by `aitext-prompts
+#                         doctor` and scripts.
+#   AITEXT_INSTRUCTION=…  answer an `ask:` prompt without showing the dialog
+#   AITEXT_SOUNDS=on|off  override the sound setting
 set -uo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
@@ -148,6 +157,7 @@ CONF_FILE="$CONF_DIR/config"
 PROMPT_DIR="${AITEXT_PROMPTS:-$CONF_DIR/prompts}"
 STATE_DIR="${AITEXT_STATE:-$HOME/.local/state/aitext}"
 PROMPT_FILE="$PROMPT_DIR/$MODE.md"
+BATCH="${AITEXT_BATCH:-}"
 
 TEXT=$(cat)
 
@@ -162,7 +172,9 @@ SND_START=$(conf sound_start /System/Library/Sounds/Tink.aiff)
 SND_DONE=$(conf sound_done /System/Library/Sounds/Pop.aiff)
 SND_ERROR=$(conf sound_error /System/Library/Sounds/Basso.aiff)
 SND_VOL=$(conf sound_volume 0.35)
+HISTORY=$(conf history on)
 [ -n "${AITEXT_SOUNDS:-}" ] && SOUNDS="$AITEXT_SOUNDS"
+[ -n "$BATCH" ] && SOUNDS=off
 
 play() {  # fire-and-forget; detached so it survives this script exiting
   case "$SOUNDS" in on|1|true|yes) ;; *) return 0 ;; esac
@@ -170,14 +182,41 @@ play() {  # fire-and-forget; detached so it survives this script exiting
   ( afplay -v "$SND_VOL" "$1" >/dev/null 2>&1 & ) >/dev/null 2>&1
 }
 
-alert() {
-  osascript - "$1" "$2" >/dev/null 2>&1 <<'APPLESCRIPT'
+alert() {  # alert <mode> <message>
+  if [ -n "$BATCH" ]; then
+    printf 'aitext %s: %s\n' "$1" "$2" >&2
+    return 0
+  fi
+  osascript - "aitext: $1" "$2" >/dev/null 2>&1 <<'APPLESCRIPT'
 on run argv
   display alert (item 1 of argv) message (item 2 of argv)
 end run
 APPLESCRIPT
 }
-die() { play "$SND_ERROR"; alert "aitext: $MODE" "$1"; printf '%s' "$TEXT"; exit 0; }
+
+# history: one JSON line per event, capped so it never grows unbounded.
+# Stores your text in plain text — disable with: aitext-config set history off
+hist() {  # hist <status> <output-or-error>
+  case "$HISTORY" in on|1|true|yes) ;; *) return 0 ;; esac
+  command -v jq >/dev/null 2>&1 || return 0
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  local f="$STATE_DIR/history.jsonl" n tmp
+  jq -cn --arg ts "$(date '+%Y-%m-%d %H:%M:%S')" --arg mode "$MODE" \
+     --arg status "$1" --arg input "$TEXT" --arg output "$2" \
+     '{ts:$ts, mode:$mode, status:$status, input:$input, output:$output}' >> "$f" 2>/dev/null
+  n=$(wc -l < "$f" 2>/dev/null | tr -d ' ')
+  if [ "${n:-0}" -gt 300 ]; then
+    tmp=$(mktemp) && tail -n 200 "$f" > "$tmp" && mv "$tmp" "$f"
+  fi
+}
+
+die() {
+  play "$SND_ERROR"
+  hist error "$1"
+  alert "$MODE" "$1"
+  printf '%s' "$TEXT"
+  if [ -n "$BATCH" ]; then exit 1; else exit 0; fi
+}
 
 command -v jq >/dev/null         || die "jq not found. Run: brew install jq"
 [[ -f "$PROMPT_FILE" ]]          || die "No prompt named '$MODE' in $PROMPT_DIR"
@@ -193,10 +232,36 @@ TEMP=$(field temperature)   # empty = omit from the request (use the API default
 [ -z "$TEMP" ] || printf '%s' "$TEMP" | grep -qE '^[0-9]+(\.[0-9]+)?$' \
   || die "temperature '$TEMP' in $PROMPT_FILE is not a number"
 OUT=$(field output);        OUT="${OUT:-replace}"
+BASE_URL=$(field base_url)
+ASK=$(field ask)
 
 # per-prompt sound override, then environment wins over everything
 PROMPT_SOUNDS=$(field sounds); [ -n "$PROMPT_SOUNDS" ] && SOUNDS="$PROMPT_SOUNDS"
 [ -n "${AITEXT_SOUNDS:-}" ] && SOUNDS="$AITEXT_SOUNDS"
+[ -n "$BATCH" ] && SOUNDS=off
+
+# Interactive prompt: an `ask:` line means the instruction comes from the user
+# at invocation time — via $AITEXT_INSTRUCTION, or a dialog. Cancelling the
+# dialog quietly hands the selection back untouched.
+if [ -n "$ASK" ]; then
+  INSTRUCTION="${AITEXT_INSTRUCTION:-}"
+  if [ -z "$INSTRUCTION" ]; then
+    [ -n "$BATCH" ] && die "interactive mode — set AITEXT_INSTRUCTION to use '$MODE' in scripts"
+    INSTRUCTION=$(osascript - "$ASK" 2>/dev/null <<'APPLESCRIPT'
+on run argv
+  try
+    set r to display dialog (item 1 of argv) default answer "" buttons {"Cancel", "Apply"} default button "Apply" with title "aitext"
+    if button returned of r is "Apply" then return text returned of r
+  end try
+end run
+APPLESCRIPT
+)
+    if [ -z "${INSTRUCTION//[[:space:]]/}" ]; then
+      printf '%s' "$TEXT"; exit 0   # cancelled
+    fi
+  fi
+  SYSTEM="Instruction from the user: $INSTRUCTION"$'\n\n'"$SYSTEM"
+fi
 
 SYSTEM="$SYSTEM"$'\n\n''Return ONLY the resulting text. No preamble, no explanation, no surrounding quotes, no code fences. Preserve the input language, line breaks, markdown, code blocks, URLs and proper nouns.'
 
@@ -207,19 +272,33 @@ play "$SND_START"
 case "$PROVIDER" in
   openai)
     MODEL="${MODEL:-gpt-5.4-nano}"
-    KEY=$(security find-generic-password -s OPENAI_API_KEY -w 2>/dev/null) \
-      || die "OPENAI_API_KEY not found in Keychain."
+    DEFAULT_BASE="https://api.openai.com/v1"
+    BASE="${BASE_URL:-$(conf openai_base_url "$DEFAULT_BASE")}"
+    BASE="${BASE%/}"
+    KEY=$(security find-generic-password -s OPENAI_API_KEY -w 2>/dev/null) || KEY=""
+    # A custom endpoint (Ollama, LM Studio, …) may not need a key; the real API does.
+    if [ -z "$KEY" ] && [ "$BASE" = "$DEFAULT_BASE" ]; then
+      die "OPENAI_API_KEY not found in Keychain."
+    fi
     REQ=$(jq -n --arg m "$MODEL" --arg s "$SYSTEM" --arg u "$TEXT" \
       '{model:$m, messages:[{role:"system",content:$s},{role:"user",content:$u}]}')
     # some models (e.g. gpt-5.6-luna) reject non-default temperature — only
     # send the field when the prompt file asks for one
     [ -n "$TEMP" ] && REQ=$(jq --argjson t "$TEMP" '. + {temperature:$t}' <<<"$REQ")
-    RESP=$(curl -sS --max-time 60 https://api.openai.com/v1/chat/completions \
-      --config <(printf 'header = "Authorization: Bearer %s"\n' "$KEY") \
-      -H "Content-Type: application/json" -d "$REQ") \
-      || die "Network error talking to OpenAI."
-    ERR=$(jq -r '.error.message // empty' <<<"$RESP"); [[ -z "$ERR" ]] || die "OpenAI: $ERR"
-    RESULT=$(jq -r '.choices[0].message.content // empty' <<<"$RESP")
+    if [ -n "$KEY" ]; then
+      RESP=$(curl -sS --max-time 60 "$BASE/chat/completions" \
+        --config <(printf 'header = "Authorization: Bearer %s"\n' "$KEY") \
+        -H "Content-Type: application/json" -d "$REQ") \
+        || die "Network error talking to $BASE."
+    else
+      RESP=$(curl -sS --max-time 60 "$BASE/chat/completions" \
+        -H "Content-Type: application/json" -d "$REQ") \
+        || die "Network error talking to $BASE."
+    fi
+    ERR=$(jq -r 'if (.error|type)=="object" then .error.message elif (.error|type)=="string" then .error else empty end' <<<"$RESP" 2>/dev/null) \
+      || die "Unparseable response from $BASE."
+    [[ -z "$ERR" ]] || die "API: $ERR"
+    RESULT=$(jq -r '.choices[0].message.content // empty' <<<"$RESP" 2>/dev/null)
     ;;
   anthropic)
     MODEL="${MODEL:-claude-haiku-4-5}"
@@ -232,8 +311,10 @@ case "$PROVIDER" in
       -H "anthropic-version: 2023-06-01" \
       -H "Content-Type: application/json" -d "$REQ") \
       || die "Network error talking to Anthropic."
-    ERR=$(jq -r '.error.message // empty' <<<"$RESP"); [[ -z "$ERR" ]] || die "Anthropic: $ERR"
-    RESULT=$(jq -r '[.content[]? | select(.type=="text") | .text] | join("")' <<<"$RESP")
+    ERR=$(jq -r '.error.message // empty' <<<"$RESP" 2>/dev/null) \
+      || die "Unparseable response from Anthropic."
+    [[ -z "$ERR" ]] || die "Anthropic: $ERR"
+    RESULT=$(jq -r '[.content[]? | select(.type=="text") | .text] | join("")' <<<"$RESP" 2>/dev/null)
     ;;
   *) die "Unknown provider '$PROVIDER' in $PROMPT_FILE" ;;
 esac
@@ -247,11 +328,14 @@ if [[ "$TEXT" != '```'* && "$RESULT" == '```'* && "$RESULT" == *'```' ]]; then
 fi
 
 play "$SND_DONE"
+hist ok "$RESULT"
+
+[ -n "$BATCH" ] && OUT=replace
 
 case "$OUT" in
   append)    printf '%s\n\n%s' "$TEXT" "$RESULT" ;;
   clipboard) printf '%s' "$RESULT" | pbcopy; printf '%s' "$TEXT" ;;
-  notify)    alert "aitext: $MODE" "$RESULT"; printf '%s' "$TEXT" ;;
+  notify)    alert "$MODE" "$RESULT"; printf '%s' "$TEXT" ;;
   *)         printf '%s' "$RESULT" ;;
 esac
 AITEXT_EOF
@@ -260,6 +344,7 @@ ok "$BIN_DIR/aitext"
 
 cat > "$BIN_DIR/aitext-config" <<'AITEXT_CONFIG_EOF'
 #!/usr/bin/env bash
+# shellcheck disable=SC2034  # DEFAULT_* vars are read via eval in default_for()
 # aitext-config — global settings for aitext (~/.config/aitext/config).
 #
 #   aitext-config                  show every setting and where it came from
@@ -274,6 +359,9 @@ cat > "$BIN_DIR/aitext-config" <<'AITEXT_CONFIG_EOF'
 #   sound_done     path to .aiff   played when the result is ready
 #   sound_error    path to .aiff   played when something failed
 #   sound_volume   0.0 – 1.0
+#   history        on | off        log transforms for aitext-log (plain text!)
+#   openai_base_url  URL           OpenAI-compatible endpoint, e.g. a local
+#                                  Ollama: http://localhost:11434/v1
 #
 # Precedence: $AITEXT_SOUNDS  >  a `sounds:` line in the prompt file  >  this file.
 
@@ -290,7 +378,9 @@ DEFAULT_sound_start=/System/Library/Sounds/Tink.aiff
 DEFAULT_sound_done=/System/Library/Sounds/Pop.aiff
 DEFAULT_sound_error=/System/Library/Sounds/Basso.aiff
 DEFAULT_sound_volume=0.35
-KEYS="sounds sound_start sound_done sound_error sound_volume"
+DEFAULT_history=on
+DEFAULT_openai_base_url=https://api.openai.com/v1
+KEYS="sounds sound_start sound_done sound_error sound_volume history openai_base_url"
 
 default_for() { eval "printf '%s' \"\${DEFAULT_$1}\""; }
 
@@ -309,8 +399,10 @@ valid_key() {
 
 validate() {  # validate <key> <value>
   case "$1" in
-    sounds)
-      case "$2" in on|off) ;; *) die "sounds must be 'on' or 'off'" ;; esac ;;
+    sounds|history)
+      case "$2" in on|off) ;; *) die "$1 must be 'on' or 'off'" ;; esac ;;
+    openai_base_url)
+      printf '%s' "$2" | grep -qE '^https?://[^[:space:]]+$' || die "openai_base_url must be an http(s):// URL" ;;
     sound_start|sound_done|sound_error)
       [ -f "$2" ] || die "no such file: $2   (try: ls /System/Library/Sounds)" ;;
     sound_volume)
@@ -328,7 +420,7 @@ cmd_set() {
   if [ ! -f "$CONF_FILE" ]; then
     printf '# aitext settings — see: aitext-config --help\n' > "$CONF_FILE"
   fi
-  if grep -qE "^[[:space:]]*$key[[:space:]]*=" "$CONF_FILE"; then
+  if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$CONF_FILE"; then
     local tmp; tmp=$(mktemp)
     awk -v k="$key" -v v="$val" '
       $0 ~ "^[[:space:]]*"k"[[:space:]]*=" { print k"="v; done=1; next }
@@ -357,6 +449,7 @@ cmd_list() {
   done
   printf '\n\033[90mFile: %s%s\033[0m\n' "$CONF_FILE" \
     "$([ -f "$CONF_FILE" ] || printf ' (not created yet — all defaults)')"
+  # shellcheck disable=SC2016  # backticks here are literal markdown, not expansion
   printf '\033[90mPer-prompt override: add a `sounds: off` line to a prompt file.\033[0m\n'
 }
 
@@ -485,7 +578,7 @@ cmd_list() {
     n=$((n + 1))
   done < <(rows)
   [ "$n" -gt 0 ] || echo "  no aitext Quick Actions found in $SERVICES"
-  printf '\n\033[90mReserved with ⇧⌃ (macOS text selection): %s\033[0m\n' "$(printf '%s' "$RESERVED" | tr 'a-z' 'A-Z')"
+  printf '\n\033[90mReserved with ⇧⌃ (macOS text selection): %s\033[0m\n' "$(printf '%s' "$RESERVED" | tr '[:lower:]' '[:upper:]')"
 }
 
 cmd_set() {
@@ -497,7 +590,7 @@ cmd_set() {
   if [ "${key%?}" = "\$^" ] || [ "${key%?}" = "^\$" ]; then
     case " $RESERVED " in
       *" $letter "*) printf '\033[33m!\033[0m ⇧⌃%s is reserved by macOS for text selection — it will not fire in most apps.\n' \
-                       "$(printf '%s' "$letter" | tr 'a-z' 'A-Z')" ;;
+                       "$(printf '%s' "$letter" | tr '[:lower:]' '[:upper:]')" ;;
     esac
   fi
   local other
@@ -539,6 +632,98 @@ esac
 AITEXT_KEYS_EOF
 chmod +x "$BIN_DIR/aitext-keys"
 ok "$BIN_DIR/aitext-keys"
+
+cat > "$BIN_DIR/aitext-log" <<'AITEXT_LOG_EOF'
+#!/usr/bin/env bash
+# aitext-log — browse the transform history (undo beyond ⌘Z).
+#
+#   aitext-log              list recent transforms, newest first
+#   aitext-log show <n>     full input and output of entry n (1 = newest)
+#   aitext-log copy <n>     put entry n's OUTPUT on the clipboard
+#   aitext-log restore <n>  put entry n's INPUT on the clipboard (the original)
+#   aitext-log clear        delete the history
+#
+# History is written by aitext on every call (capped at ~200 entries) and
+# stores your text in plain text. Turn it off: aitext-config set history off
+
+set -uo pipefail
+
+STATE_DIR="${AITEXT_STATE:-$HOME/.local/state/aitext}"
+HIST="$STATE_DIR/history.jsonl"
+
+die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+ok()  { printf '\033[32m✓\033[0m %s\n' "$*"; }
+
+have_history() { [ -s "$HIST" ]; }
+
+entry() {  # entry <n> — print the nth-newest JSON line
+  local n="$1"
+  printf '%s' "$n" | grep -qE '^[0-9]+$' || die "n must be a number (1 = newest)"
+  [ "$n" -ge 1 ] || die "n must be 1 or more"
+  local total; total=$(wc -l < "$HIST" | tr -d ' ')
+  [ "$n" -le "$total" ] || die "only $total entries (1 = newest)"
+  tail -n "$n" "$HIST" | head -1
+}
+
+cmd_list() {
+  have_history || { echo "No history yet — run a transform first. (File: $HIST)"; exit 0; }
+  printf '\033[1m%3s  %-19s %-9s %-4s %-34s %s\033[0m\n' N WHEN MODE OK INPUT OUTPUT
+  tail -n 20 "$HIST" | jq -r '[.ts, .mode, .status, .input, .output] | @tsv' \
+    | awk -F'\t' '{ lines[NR]=$0 } END { for (i=NR; i>=1; i--) print lines[i] }' \
+    | awk -F'\t' '{
+        gsub(/\\t/, " ", $4); gsub(/\\n/, " ", $4)
+        gsub(/\\t/, " ", $5); gsub(/\\n/, " ", $5)
+        inp = length($4) > 32 ? substr($4, 1, 31) "…" : $4
+        out = length($5) > 40 ? substr($5, 1, 39) "…" : $5
+        okc = ($3 == "ok") ? "✓" : "✗"
+        printf "%3d  %-19s %-9s %-4s %-34s %s\n", NR, $1, $2, okc, inp, out
+      }'
+  local total; total=$(wc -l < "$HIST" | tr -d ' ')
+  printf '\n\033[90m%s entries total. aitext-log show <n> for full text; restore <n> puts the original on the clipboard.\033[0m\n' "$total"
+}
+
+cmd_show() {
+  have_history || die "no history"
+  local e; e=$(entry "${1:-1}") || exit 1 || exit 1 || exit 1
+  printf '\033[1mwhen:\033[0m   %s\n' "$(jq -r '.ts'     <<<"$e")"
+  printf '\033[1mmode:\033[0m   %s\n' "$(jq -r '.mode'   <<<"$e")"
+  printf '\033[1mstatus:\033[0m %s\n' "$(jq -r '.status' <<<"$e")"
+  printf '\n\033[1m--- input ---\033[0m\n%s\n'  "$(jq -r '.input'  <<<"$e")"
+  printf '\n\033[1m--- output ---\033[0m\n%s\n' "$(jq -r '.output' <<<"$e")"
+}
+
+cmd_copy() {
+  have_history || die "no history"
+  local e; e=$(entry "${1:-1}")
+  [ "$(jq -r '.status' <<<"$e")" = "ok" ] || die "entry ${1:-1} is an error record — its 'output' is the error message"
+  jq -rj '.output' <<<"$e" | pbcopy
+  ok "output of entry ${1:-1} is on the clipboard"
+}
+
+cmd_restore() {
+  have_history || die "no history"
+  local e; e=$(entry "${1:-1}")
+  jq -rj '.input' <<<"$e" | pbcopy
+  ok "ORIGINAL input of entry ${1:-1} is on the clipboard — paste it wherever the text was"
+}
+
+cmd_clear() {
+  rm -f "$HIST"
+  ok "history cleared"
+}
+
+case "${1:-list}" in
+  list|ls|"")     cmd_list ;;
+  show)           shift; cmd_show "$@" ;;
+  copy)           shift; cmd_copy "$@" ;;
+  restore)        shift; cmd_restore "$@" ;;
+  clear)          cmd_clear ;;
+  -h|--help|help) awk 'NR>1 && !/^#/{exit} NR>1{sub(/^# ?/,""); print}' "$0" ;;
+  *)              die "unknown command '$1' (try: aitext-log --help)" ;;
+esac
+AITEXT_LOG_EOF
+chmod +x "$BIN_DIR/aitext-log"
+ok "$BIN_DIR/aitext-log"
 
 cat > "$BIN_DIR/aitext-service" <<'AITEXT_SERVICE_EOF'
 #!/usr/bin/env bash
@@ -639,14 +824,14 @@ PLIST
   if ! plutil -lint "$c/Info.plist" >/dev/null 2>&1 || ! plutil -lint "$c/document.wflow" >/dev/null 2>&1; then
     rm -rf "$w"; die "generated a malformed plist for '$name' — not installed"
   fi
-  /System/Library/CoreServices/pbs -flush 2>/dev/null
+  /System/Library/CoreServices/pbs -flush 2>/dev/null || true
 }
 
 remove() {
   local name="${1:-}"
   [ -n "$name" ] || die "usage: aitext-service remove <Menu Name>"
   rm -rf "$SERVICES/$name.workflow"
-  /System/Library/CoreServices/pbs -flush 2>/dev/null
+  /System/Library/CoreServices/pbs -flush 2>/dev/null || true
 }
 
 case "${1:-}" in
@@ -673,6 +858,7 @@ cat > "$BIN_DIR/aitext-prompts" <<'AITEXT_PROMPTS_EOF'
 #                                      scaffold prompt + Quick Action + hotkey
 #   aitext-prompts rm <mode> [--keep-prompt]
 #                                      remove hotkey, Quick Action, prompt file
+#   aitext-prompts doctor              live-test every mode against its API
 #
 # The hotkey list lives in ~/.config/aitext/hotkeys.conf — new/rm keep it in
 # sync, so re-running install.sh reproduces exactly what you have now.
@@ -856,7 +1042,7 @@ cmd_rm() {
   for a in "$@"; do
     case "$a" in
       --keep-prompt) keep=1 ;;
-      *) [ -z "$mode" ] && mode="$a" || die "unexpected argument '$a'" ;;
+      *) if [ -z "$mode" ]; then mode="$a"; else die "unexpected argument '$a'"; fi ;;
     esac
   done
   [ -n "$mode" ] || die "usage: aitext-prompts rm <mode> [--keep-prompt]"
@@ -879,6 +1065,47 @@ cmd_rm() {
   fi
 }
 
+
+cmd_doctor() {
+  # Run every mode against its live API with a tiny input. Catches dead models,
+  # rejected parameters, bad keys — the failures that otherwise hide behind the
+  # "return the original text" safety net until you press the hotkey.
+  local sample="teh answr is 42"
+  local f mode provider model ask out err rc pass=0 fail=0 skip=0
+  printf '\033[1m%-9s %-10s %-18s %s\033[0m\n' MODE PROVIDER MODEL RESULT
+  for f in "$PROMPT_DIR"/*.md; do
+    [ -f "$f" ] || continue
+    mode=$(basename "$f" .md)
+    provider=$(field "$mode" provider); provider=${provider:-openai}
+    model=$(field "$mode" model)
+    [ -n "$model" ] || { [ "$provider" = "openai" ] && model="gpt-5.4-nano" || model="claude-haiku-4-5"; }
+    ask=$(field "$mode" ask)
+    if [ -n "$ask" ]; then
+      printf '%-9s %-10s %-18s \033[90mskipped (interactive — test by hotkey)\033[0m\n' "$mode" "$provider" "$model"
+      skip=$((skip+1)); continue
+    fi
+    if [ "$provider" = "anthropic" ] && ! security find-generic-password -s ANTHROPIC_API_KEY >/dev/null 2>&1; then
+      printf '%-9s %-10s %-18s \033[90mskipped (no ANTHROPIC_API_KEY)\033[0m\n' "$mode" "$provider" "$model"
+      skip=$((skip+1)); continue
+    fi
+    err=$(mktemp)
+    out=$(printf '%s' "$sample" | AITEXT_BATCH=1 "$HOME/.local/bin/aitext" "$mode" 2>"$err"); rc=$?
+    if [ $rc -eq 0 ] && [ -n "$out" ] && [ "$out" != "$sample" ]; then
+      printf '%-9s %-10s %-18s \033[32m✓\033[0m %s\n' "$mode" "$provider" "$model" "$(printf '%s' "$out" | head -1 | cut -c1-40)"
+      pass=$((pass+1))
+    elif [ $rc -eq 0 ]; then
+      printf '%-9s %-10s %-18s \033[33m?\033[0m output identical to input\n' "$mode" "$provider" "$model"
+      pass=$((pass+1))
+    else
+      printf '%-9s %-10s %-18s \033[31m✗\033[0m %s\n' "$mode" "$provider" "$model" "$(head -1 "$err" | sed "s/^aitext $mode: //" | cut -c1-60)"
+      fail=$((fail+1))
+    fi
+    rm -f "$err"
+  done
+  printf '\n%d ok, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
+  [ "$fail" -eq 0 ]
+}
+
 case "${1:-list}" in
   list|ls|"")      cmd_list ;;
   show|cat)        shift; [ $# -ge 1 ] || die "usage: aitext-prompts show <mode>"; cmd_show "$1" ;;
@@ -887,6 +1114,7 @@ case "${1:-list}" in
   set)             shift; cmd_set "$@" ;;
   new|add)         shift; cmd_new "$@" ;;
   rm|remove|del)   shift; cmd_rm "$@" ;;
+  doctor|check)    cmd_doctor ;;
   -h|--help|help)  awk 'NR>1 && !/^#/{exit} NR>1{sub(/^# ?/,""); print}' "$0" ;;
   *)               die "unknown command '$1' (try: aitext-prompts --help)" ;;
 esac
@@ -1012,6 +1240,12 @@ write_prompt commit <<'PROMPT_EOF'
 temperature: 0.2
 ---
 The input is a diff or a list of changes. Write a git commit message: a 50-character imperative subject line, a blank line, then 1-3 bullets on the why. No trailing period on the subject.
+PROMPT_EOF
+
+write_prompt ask <<'PROMPT_EOF'
+ask: What should I do with the selected text?
+---
+Apply the user's instruction above to the text, and nothing else. If the instruction asks a question about the text rather than for a transformation, replace the text with the answer.
 PROMPT_EOF
 
 
@@ -1148,6 +1382,7 @@ cat <<EOF
   ⌘Z undoes it as a single edit.
 
   Prompts:   aitext-prompts                  list every mode
+             aitext-prompts doctor           live-test every mode
              aitext-prompts edit grammar     open in \$EDITOR
              aitext-prompts test grammar     run sample text through it
              aitext-prompts new harsh "AI Make Blunt" shift+ctrl+j
@@ -1156,6 +1391,9 @@ cat <<EOF
   Sounds:    aitext-config                   show settings
              aitext-config sounds off        silence the cues
              aitext-config test              hear them
+
+  History:   aitext-log                      recent transforms (undo beyond ⌘Z)
+             aitext-config set history off   stop logging them
 
   Hotkeys:   aitext-keys                     list bindings
              aitext-keys set grammar shift+ctrl+j
