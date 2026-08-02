@@ -237,6 +237,10 @@ cmd_doctor() {
     if [ -z "$model" ]; then
       if [ "$provider" = "openai" ]; then model="gpt-5.4-nano"; else model="claude-haiku-4-5"; fi
     fi
+    case "$model" in
+      cheap) model="cheap→$("$HOME/.local/bin/aitext-config" get model_cheap 2>/dev/null)" ;;
+      smart) model="smart→$("$HOME/.local/bin/aitext-config" get model_smart 2>/dev/null)" ;;
+    esac
     ask=$(field "$mode" ask)
     if [ -n "$ask" ]; then
       printf '%-9s %-10s %-18s \033[90mskipped (interactive — test by hotkey)\033[0m\n' "$mode" "$provider" "$model"

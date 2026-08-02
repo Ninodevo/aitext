@@ -20,6 +20,7 @@ PROMPT_FILE="$PROMPT_DIR/$MODE.md"
 BATCH="${AITEXT_BATCH:-}"
 
 TEXT=$(cat)
+TIN=0 TOUT=0   # token usage, captured from the API response for aitext-log stats
 
 # ---- settings: config file, overridable per-prompt and by environment -------
 conf() {  # conf <key> <default>
@@ -61,9 +62,12 @@ hist() {  # hist <status> <output-or-error>
   command -v jq >/dev/null 2>&1 || return 0
   mkdir -p "$STATE_DIR" 2>/dev/null || return 0
   local f="$STATE_DIR/history.jsonl" n tmp
+  case "$TIN"  in ''|*[!0-9]*) TIN=0  ;; esac
+  case "$TOUT" in ''|*[!0-9]*) TOUT=0 ;; esac
   jq -cn --arg ts "$(date '+%Y-%m-%d %H:%M:%S')" --arg mode "$MODE" \
      --arg status "$1" --arg input "$TEXT" --arg output "$2" \
-     '{ts:$ts, mode:$mode, status:$status, input:$input, output:$output}' >> "$f" 2>/dev/null
+     --arg model "${MODEL:-}" --argjson tin "$TIN" --argjson tout "$TOUT" \
+     '{ts:$ts, mode:$mode, status:$status, model:$model, tin:$tin, tout:$tout, input:$input, output:$output}' >> "$f" 2>/dev/null
   n=$(wc -l < "$f" 2>/dev/null | tr -d ' ')
   if [ "${n:-0}" -gt 300 ]; then
     tmp=$(mktemp) && tail -n 200 "$f" > "$tmp" && mv "$tmp" "$f"
@@ -88,6 +92,11 @@ field() { printf '%s\n' "$HEADER" | sed -n "s/^$1:[[:space:]]*//p" | head -1; }
 
 PROVIDER=$(field provider); PROVIDER="${PROVIDER:-openai}"
 MODEL=$(field model)
+# aliases: point prompts at a role, retarget every prompt in one config line
+case "$MODEL" in
+  cheap) MODEL=$(conf model_cheap gpt-5.4-nano) ;;
+  smart) MODEL=$(conf model_smart gpt-5.6-luna) ;;
+esac
 TEMP=$(field temperature)   # empty = omit from the request (use the API default)
 [ -z "$TEMP" ] || printf '%s' "$TEMP" | grep -qE '^[0-9]+(\.[0-9]+)?$' \
   || die "temperature '$TEMP' in $PROMPT_FILE is not a number"
@@ -159,6 +168,8 @@ case "$PROVIDER" in
       || die "Unparseable response from $BASE."
     [[ -z "$ERR" ]] || die "API: $ERR"
     RESULT=$(jq -r '.choices[0].message.content // empty' <<<"$RESP" 2>/dev/null)
+    TIN=$(jq -r '.usage.prompt_tokens // 0' <<<"$RESP" 2>/dev/null); TIN=${TIN:-0}
+    TOUT=$(jq -r '.usage.completion_tokens // 0' <<<"$RESP" 2>/dev/null); TOUT=${TOUT:-0}
     ;;
   anthropic)
     MODEL="${MODEL:-claude-haiku-4-5}"
@@ -175,6 +186,8 @@ case "$PROVIDER" in
       || die "Unparseable response from Anthropic."
     [[ -z "$ERR" ]] || die "Anthropic: $ERR"
     RESULT=$(jq -r '[.content[]? | select(.type=="text") | .text] | join("")' <<<"$RESP" 2>/dev/null)
+    TIN=$(jq -r '.usage.input_tokens // 0' <<<"$RESP" 2>/dev/null); TIN=${TIN:-0}
+    TOUT=$(jq -r '.usage.output_tokens // 0' <<<"$RESP" 2>/dev/null); TOUT=${TOUT:-0}
     ;;
   *) die "Unknown provider '$PROVIDER' in $PROMPT_FILE" ;;
 esac

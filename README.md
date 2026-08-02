@@ -4,7 +4,7 @@
 
 AI text transforms on a keyboard shortcut, anywhere in macOS.
 
-Select text in any app, press **⇧⌃G**, and the selection is replaced by a corrected version. ⌘Z undoes it as a single edit. Fourteen transforms ship by default — fix grammar, rewrite clearer, shorten, translate, summarize, draft a reply, or press ⇧⌃I and type any instruction on the spot — and adding your own takes one command.
+Select text in any app, press **⇧⌃G**, and the selection is replaced by a corrected version. ⌘Z undoes it as a single edit. Fifteen transforms ship by default — fix grammar, rewrite clearer, shorten, translate, summarize, draft a reply, or press ⇧⌃I and type any instruction on the spot — and adding your own takes one command.
 
 No menu-bar app, no background daemon, no Electron. Each hotkey is a native macOS Quick Action that pipes your selection through a shell script and writes the result back.
 
@@ -22,7 +22,7 @@ cd aitext
 ./install.sh
 ```
 
-The installer checks prerequisites, writes the commands and prompts, builds all fourteen Quick Actions, assigns the shortcuts, prompts you for your API key in a native secure-input dialog, and finishes with a live API call to prove it works end to end.
+The installer checks prerequisites, writes the commands and prompts, builds all the Quick Actions, assigns the shortcuts, prompts you for your API key in a native secure-input dialog, and finishes with a live API call to prove it works end to end.
 
 Your key goes to the **login Keychain** — never to a file in this repo, never to a dotfile, never into `ps` output. Re-running the installer is safe: prompts you've edited are kept unless you pass `--force`.
 
@@ -46,6 +46,7 @@ All shortcuts are **Shift + Control + letter**.
 | ⇧⌃C | Make casual | replaced |
 | ⇧⌃U | Convert to bullets | replaced |
 | ⇧⌃D | Expand notes into prose | replaced |
+| ⇧⌃J | **Translate (smart)** — EN→HR, anything else→EN | replaced |
 | ⇧⌃T | Translate to English | replaced |
 | ⇧⌃H | Translate to Croatian | replaced |
 | ⇧⌃M | Commit message from a diff | replaced |
@@ -78,6 +79,7 @@ aitext-config test                          # hear them
 
 aitext-log                                  # recent transforms (undo beyond ⌘Z)
 aitext-log restore 1                        # put the latest ORIGINAL on the clipboard
+aitext-log stats                            # per-mode calls, tokens, estimated cost
 aitext-config set history off               # stop logging transforms
 
 echo "some text" | aitext grammar                    # the dispatcher, standalone
@@ -99,7 +101,7 @@ author's voice — do not rewrite phrasing that is already correct.
 | Key | Values | Default |
 |---|---|---|
 | `provider` | `openai`, `anthropic` | `openai` |
-| `model` | any model id for that provider | `gpt-5.4-nano` / `claude-haiku-4-5` |
+| `model` | a model id, or the aliases `cheap` / `smart` (retarget every aliased prompt at once: `aitext-config set model_smart …`) | `cheap` |
 | `temperature` | `0`–`2`, OpenAI only; omit to use the API default | omitted |
 | `output` | `replace`, `append`, `clipboard`, `notify`, `confirm` (preview + approve before replacing) | `replace` |
 | `sounds` | `on`, `off` — overrides the global setting | inherits |
@@ -130,7 +132,7 @@ Text Services need a selection, and a few apps (some Electron apps, some browser
 
 ## Cost
 
-Roughly, for a 200-word paragraph in and out (~350 input / ~270 output tokens):
+`aitext-log stats` shows your actual per-mode token usage and estimated spend. Roughly, for a 200-word paragraph in and out (~350 input / ~270 output tokens):
 
 | Model | $/1M in / out | Per press | At 50/day |
 |---|---|---|---|

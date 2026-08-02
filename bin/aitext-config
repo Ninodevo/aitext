@@ -17,6 +17,8 @@
 #   history        on | off        log transforms for aitext-log (plain text!)
 #   openai_base_url  URL           OpenAI-compatible endpoint, e.g. a local
 #                                  Ollama: http://localhost:11434/v1
+#   model_cheap    model id        what prompts with `model: cheap` use
+#   model_smart    model id        what prompts with `model: smart` use
 #
 # Precedence: $AITEXT_SOUNDS  >  a `sounds:` line in the prompt file  >  this file.
 
@@ -35,7 +37,9 @@ DEFAULT_sound_error=/System/Library/Sounds/Basso.aiff
 DEFAULT_sound_volume=0.35
 DEFAULT_history=on
 DEFAULT_openai_base_url=https://api.openai.com/v1
-KEYS="sounds sound_start sound_done sound_error sound_volume history openai_base_url"
+DEFAULT_model_cheap=gpt-5.4-nano
+DEFAULT_model_smart=gpt-5.6-luna
+KEYS="sounds sound_start sound_done sound_error sound_volume history openai_base_url model_cheap model_smart"
 
 default_for() { eval "printf '%s' \"\${DEFAULT_$1}\""; }
 
@@ -58,6 +62,8 @@ validate() {  # validate <key> <value>
       case "$2" in on|off) ;; *) die "$1 must be 'on' or 'off'" ;; esac ;;
     openai_base_url)
       printf '%s' "$2" | grep -qE '^https?://[^[:space:]]+$' || die "openai_base_url must be an http(s):// URL" ;;
+    model_cheap|model_smart)
+      printf '%s' "$2" | grep -qE '^[A-Za-z0-9._:/-]+$' || die "$1 must be a model id" ;;
     sound_start|sound_done|sound_error)
       [ -f "$2" ] || die "no such file: $2   (try: ls /System/Library/Sounds)" ;;
     sound_volume)

@@ -61,6 +61,7 @@ bullets|AI To Bullets|$^u
 expand|AI Expand Notes|$^d
 tldr|AI Summarize|$^s
 en|AI Translate to English|$^t
+translate|AI Translate|$^j
 hr|AI Translate to Croatian|$^h
 reply|AI Draft Reply|$^y
 explain|AI Explain This|$^x
@@ -162,6 +163,7 @@ PROMPT_FILE="$PROMPT_DIR/$MODE.md"
 BATCH="${AITEXT_BATCH:-}"
 
 TEXT=$(cat)
+TIN=0 TOUT=0   # token usage, captured from the API response for aitext-log stats
 
 # ---- settings: config file, overridable per-prompt and by environment -------
 conf() {  # conf <key> <default>
@@ -203,9 +205,12 @@ hist() {  # hist <status> <output-or-error>
   command -v jq >/dev/null 2>&1 || return 0
   mkdir -p "$STATE_DIR" 2>/dev/null || return 0
   local f="$STATE_DIR/history.jsonl" n tmp
+  case "$TIN"  in ''|*[!0-9]*) TIN=0  ;; esac
+  case "$TOUT" in ''|*[!0-9]*) TOUT=0 ;; esac
   jq -cn --arg ts "$(date '+%Y-%m-%d %H:%M:%S')" --arg mode "$MODE" \
      --arg status "$1" --arg input "$TEXT" --arg output "$2" \
-     '{ts:$ts, mode:$mode, status:$status, input:$input, output:$output}' >> "$f" 2>/dev/null
+     --arg model "${MODEL:-}" --argjson tin "$TIN" --argjson tout "$TOUT" \
+     '{ts:$ts, mode:$mode, status:$status, model:$model, tin:$tin, tout:$tout, input:$input, output:$output}' >> "$f" 2>/dev/null
   n=$(wc -l < "$f" 2>/dev/null | tr -d ' ')
   if [ "${n:-0}" -gt 300 ]; then
     tmp=$(mktemp) && tail -n 200 "$f" > "$tmp" && mv "$tmp" "$f"
@@ -230,6 +235,11 @@ field() { printf '%s\n' "$HEADER" | sed -n "s/^$1:[[:space:]]*//p" | head -1; }
 
 PROVIDER=$(field provider); PROVIDER="${PROVIDER:-openai}"
 MODEL=$(field model)
+# aliases: point prompts at a role, retarget every prompt in one config line
+case "$MODEL" in
+  cheap) MODEL=$(conf model_cheap gpt-5.4-nano) ;;
+  smart) MODEL=$(conf model_smart gpt-5.6-luna) ;;
+esac
 TEMP=$(field temperature)   # empty = omit from the request (use the API default)
 [ -z "$TEMP" ] || printf '%s' "$TEMP" | grep -qE '^[0-9]+(\.[0-9]+)?$' \
   || die "temperature '$TEMP' in $PROMPT_FILE is not a number"
@@ -301,6 +311,8 @@ case "$PROVIDER" in
       || die "Unparseable response from $BASE."
     [[ -z "$ERR" ]] || die "API: $ERR"
     RESULT=$(jq -r '.choices[0].message.content // empty' <<<"$RESP" 2>/dev/null)
+    TIN=$(jq -r '.usage.prompt_tokens // 0' <<<"$RESP" 2>/dev/null); TIN=${TIN:-0}
+    TOUT=$(jq -r '.usage.completion_tokens // 0' <<<"$RESP" 2>/dev/null); TOUT=${TOUT:-0}
     ;;
   anthropic)
     MODEL="${MODEL:-claude-haiku-4-5}"
@@ -317,6 +329,8 @@ case "$PROVIDER" in
       || die "Unparseable response from Anthropic."
     [[ -z "$ERR" ]] || die "Anthropic: $ERR"
     RESULT=$(jq -r '[.content[]? | select(.type=="text") | .text] | join("")' <<<"$RESP" 2>/dev/null)
+    TIN=$(jq -r '.usage.input_tokens // 0' <<<"$RESP" 2>/dev/null); TIN=${TIN:-0}
+    TOUT=$(jq -r '.usage.output_tokens // 0' <<<"$RESP" 2>/dev/null); TOUT=${TOUT:-0}
     ;;
   *) die "Unknown provider '$PROVIDER' in $PROMPT_FILE" ;;
 esac
@@ -465,6 +479,8 @@ cat > "$BIN_DIR/aitext-config" <<'AITEXT_CONFIG_EOF'
 #   history        on | off        log transforms for aitext-log (plain text!)
 #   openai_base_url  URL           OpenAI-compatible endpoint, e.g. a local
 #                                  Ollama: http://localhost:11434/v1
+#   model_cheap    model id        what prompts with `model: cheap` use
+#   model_smart    model id        what prompts with `model: smart` use
 #
 # Precedence: $AITEXT_SOUNDS  >  a `sounds:` line in the prompt file  >  this file.
 
@@ -483,7 +499,9 @@ DEFAULT_sound_error=/System/Library/Sounds/Basso.aiff
 DEFAULT_sound_volume=0.35
 DEFAULT_history=on
 DEFAULT_openai_base_url=https://api.openai.com/v1
-KEYS="sounds sound_start sound_done sound_error sound_volume history openai_base_url"
+DEFAULT_model_cheap=gpt-5.4-nano
+DEFAULT_model_smart=gpt-5.6-luna
+KEYS="sounds sound_start sound_done sound_error sound_volume history openai_base_url model_cheap model_smart"
 
 default_for() { eval "printf '%s' \"\${DEFAULT_$1}\""; }
 
@@ -506,6 +524,8 @@ validate() {  # validate <key> <value>
       case "$2" in on|off) ;; *) die "$1 must be 'on' or 'off'" ;; esac ;;
     openai_base_url)
       printf '%s' "$2" | grep -qE '^https?://[^[:space:]]+$' || die "openai_base_url must be an http(s):// URL" ;;
+    model_cheap|model_smart)
+      printf '%s' "$2" | grep -qE '^[A-Za-z0-9._:/-]+$' || die "$1 must be a model id" ;;
     sound_start|sound_done|sound_error)
       [ -f "$2" ] || die "no such file: $2   (try: ls /System/Library/Sounds)" ;;
     sound_volume)
@@ -747,6 +767,7 @@ cat > "$BIN_DIR/aitext-log" <<'AITEXT_LOG_EOF'
 #   aitext-log show <n>     full input and output of entry n (1 = newest)
 #   aitext-log copy <n>     put entry n's OUTPUT on the clipboard
 #   aitext-log restore <n>  put entry n's INPUT on the clipboard (the original)
+#   aitext-log stats        per-mode calls, tokens and estimated cost
 #   aitext-log clear        delete the history
 #
 # History is written by aitext on every call (capped at ~200 entries) and
@@ -813,6 +834,49 @@ cmd_restore() {
   ok "ORIGINAL input of entry ${1:-1} is on the clipboard — paste it wherever the text was"
 }
 
+
+cmd_stats() {
+  have_history || { echo "No history yet — run a transform first."; exit 0; }
+  # Prices per 1M tokens (in/out). Unknown models show tokens with a blank cost.
+  jq -s '
+    def price: {
+      "gpt-5.4-nano":   [0.20, 1.25],
+      "gpt-5.4-mini":   [0.75, 4.50],
+      "gpt-5.4":        [2.50, 15],
+      "gpt-5.6-luna":   [1,    6],
+      "gpt-5.6-terra":  [2.50, 15],
+      "gpt-5.6-sol":    [5,    30],
+      "claude-haiku-4-5": [1,  5],
+      "claude-sonnet-5":  [3,  15],
+      "claude-opus-5":    [5,  25]
+    };
+    group_by(.mode)
+    | map({
+        mode: .[0].mode,
+        calls: length,
+        errors: (map(select(.status != "ok")) | length),
+        tin:  (map(.tin  // 0) | add),
+        tout: (map(.tout // 0) | add),
+        cost: (map(
+          (price[.model // ""] // null) as $p
+          | if $p then ((.tin // 0) * $p[0] + (.tout // 0) * $p[1]) / 1000000 else 0 end
+        ) | add),
+        priced: (map(select(price[.model // ""])) | length)
+      })
+    | sort_by(-.calls)
+    | (.[] | [.mode, .calls, .errors, .tin, .tout,
+              (if .priced > 0 then (.cost * 10000 | round) / 10000 else "?" end)] | @tsv),
+      ([ "TOTAL", (map(.calls) | add), (map(.errors) | add), (map(.tin) | add),
+         (map(.tout) | add), ((map(.cost) | add * 10000 | round) / 10000) ] | @tsv)
+  ' -r "$HIST" | awk -F'\t' '
+    BEGIN { printf "\033[1m%-10s %6s %7s %9s %9s %10s\033[0m\n", "MODE", "CALLS", "ERRORS", "TOK IN", "TOK OUT", "EST COST" }
+    { cost = ($6 == "?") ? "?" : sprintf("$%.4f", $6)
+      style = ($1 == "TOTAL") ? "\033[1m" : ""
+      printf "%s%-10s %6s %7s %9s %9s %10s\033[0m\n", style, $1, $2, $3, $4, $5, cost }'
+  local n; n=$(wc -l < "$HIST" | tr -d ' ')
+  printf '\n\033[90mOver the last %s logged transforms (history is capped ~200; older activity is not counted).\nCosts are estimates from a built-in price table; "?" = model not in it.\033[0m\n' "$n"
+}
+
 cmd_clear() {
   rm -f "$HIST"
   ok "history cleared"
@@ -823,6 +887,7 @@ case "${1:-list}" in
   show)           shift; cmd_show "$@" ;;
   copy)           shift; cmd_copy "$@" ;;
   restore)        shift; cmd_restore "$@" ;;
+  stats)          cmd_stats ;;
   clear)          cmd_clear ;;
   -h|--help|help) awk 'NR>1 && !/^#/{exit} NR>1{sub(/^# ?/,""); print}' "$0" ;;
   *)              die "unknown command '$1' (try: aitext-log --help)" ;;
@@ -1229,6 +1294,10 @@ cmd_doctor() {
     if [ -z "$model" ]; then
       if [ "$provider" = "openai" ]; then model="gpt-5.4-nano"; else model="claude-haiku-4-5"; fi
     fi
+    case "$model" in
+      cheap) model="cheap→$("$HOME/.local/bin/aitext-config" get model_cheap 2>/dev/null)" ;;
+      smart) model="smart→$("$HOME/.local/bin/aitext-config" get model_smart 2>/dev/null)" ;;
+    esac
     ask=$(field "$mode" ask)
     if [ -n "$ask" ]; then
       printf '%-9s %-10s %-18s \033[90mskipped (interactive — test by hotkey)\033[0m\n' "$mode" "$provider" "$model"
@@ -1310,7 +1379,7 @@ write_prompt() {  # write_prompt <mode>   (file content on stdin)
 }
 
 write_prompt grammar <<'PROMPT_EOF'
-model: gpt-5.4-nano
+model: cheap
 temperature: 0
 ---
 You are a copy editor. Fix spelling, grammar, capitalization, and punctuation. Keep the author's voice, register, and word choices — do not rewrite or "improve" phrasing that is already correct. Always apply the mechanical corrections you can (capitalization, missing words, punctuation) even when parts of the text are garbled; leave any word you genuinely cannot identify exactly as it is rather than guessing a replacement.
@@ -1347,13 +1416,13 @@ Convert the text into a tight bulleted list. One idea per bullet, parallel gramm
 PROMPT_EOF
 
 write_prompt expand <<'PROMPT_EOF'
-model: gpt-5.6-luna
+model: smart
 ---
 The input is rough notes. Turn them into finished prose that says exactly what the notes say — fill in connective tissue and grammar only. Invent no facts, numbers, names, or claims.
 PROMPT_EOF
 
 write_prompt tldr <<'PROMPT_EOF'
-model: gpt-5.6-luna
+model: smart
 output: append
 ---
 Write a TL;DR of the text: at most three sentences, leading with the conclusion.
@@ -1365,6 +1434,12 @@ temperature: 0.2
 Translate the text into natural English. Match the register of the original. Leave code, names, and technical terms untranslated. If it is already English, improve it as a native speaker would write it.
 PROMPT_EOF
 
+write_prompt translate <<'PROMPT_EOF'
+model: smart
+---
+Detect the language of the text. If it is English, translate it into natural Croatian. If it is any other language, translate it into natural English. Match the register of the original; leave code, names, and established technical terms as they are.
+PROMPT_EOF
+
 write_prompt hr <<'PROMPT_EOF'
 temperature: 0.2
 ---
@@ -1372,7 +1447,7 @@ Translate the text into natural Croatian. Match the register of the original. Le
 PROMPT_EOF
 
 write_prompt reply <<'PROMPT_EOF'
-model: gpt-5.6-luna
+model: smart
 output: clipboard
 ---
 The input is a message someone sent. Draft a reply to it in the same language and register: acknowledge the substance, answer any questions, and close cleanly. Keep it short. Do not invent commitments, dates, or facts — use [brackets] where the sender must fill something in.
