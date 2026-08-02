@@ -110,6 +110,8 @@ Edits take effect on the next keypress — no reinstall. Every prompt gets this 
 
 > Return ONLY the resulting text. No preamble, no explanation, no surrounding quotes, no code fences. Preserve the input language, line breaks, markdown, code blocks, URLs and proper nouns.
 
+**If a transform reports "no changes":** the model genuinely returned your text unchanged — the pipeline ran fine. Cheap models play it safe on badly garbled input (`gpt-5.4-nano` will capitalize `this a boea sstong` but won't guess at the broken words). Point that prompt at a stronger model if you want more: `aitext-prompts set grammar model gpt-5.6-luna`.
+
 **A model gotcha worth knowing:** some models reject a non-default `temperature` (`gpt-5.6-luna` is one). If a transform silently returns your text unchanged with an alert about temperature, delete the `temperature:` line.
 
 ## Adding a transform
