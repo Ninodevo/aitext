@@ -783,19 +783,23 @@ ok()  { printf '\033[32m✓\033[0m %s\n' "$*"; }
 
 have_history() { [ -s "$HIST" ]; }
 
+# The file is append-only JSONL; a crash mid-write can leave a torn line.
+# Every consumer reads through this filter so one bad line never breaks the tool.
+valid_hist() { jq -cR 'fromjson? | select(type == "object")' "$HIST" 2>/dev/null; }
+
 entry() {  # entry <n> — print the nth-newest JSON line
   local n="$1"
   printf '%s' "$n" | grep -qE '^[0-9]+$' || die "n must be a number (1 = newest)"
   [ "$n" -ge 1 ] || die "n must be 1 or more"
-  local total; total=$(wc -l < "$HIST" | tr -d ' ')
+  local total; total=$(valid_hist | wc -l | tr -d ' ')
   [ "$n" -le "$total" ] || die "only $total entries (1 = newest)"
-  tail -n "$n" "$HIST" | head -1
+  valid_hist | tail -n "$n" | head -1
 }
 
 cmd_list() {
   have_history || { echo "No history yet — run a transform first. (File: $HIST)"; exit 0; }
   printf '\033[1m%3s  %-19s %-9s %-4s %-34s %s\033[0m\n' N WHEN MODE OK INPUT OUTPUT
-  tail -n 20 "$HIST" | jq -r '[.ts, .mode, .status, .input, .output] | @tsv' \
+  valid_hist | tail -n 20 | jq -r '[.ts, .mode, .status, .input, .output] | @tsv' \
     | awk -F'\t' '{ lines[NR]=$0 } END { for (i=NR; i>=1; i--) print lines[i] }' \
     | awk -F'\t' '{
         gsub(/\\t/, " ", $4); gsub(/\\n/, " ", $4)
@@ -805,7 +809,7 @@ cmd_list() {
         okc = ($3 == "ok") ? "✓" : "✗"
         printf "%3d  %-19s %-9s %-4s %-34s %s\n", NR, $1, $2, okc, inp, out
       }'
-  local total; total=$(wc -l < "$HIST" | tr -d ' ')
+  local total; total=$(valid_hist | wc -l | tr -d ' ')
   printf '\n\033[90m%s entries total. aitext-log show <n> for full text; restore <n> puts the original on the clipboard.\033[0m\n' "$total"
 }
 
@@ -868,12 +872,12 @@ cmd_stats() {
               (if .priced > 0 then (.cost * 10000 | round) / 10000 else "?" end)] | @tsv),
       ([ "TOTAL", (map(.calls) | add), (map(.errors) | add), (map(.tin) | add),
          (map(.tout) | add), ((map(.cost) | add * 10000 | round) / 10000) ] | @tsv)
-  ' -r "$HIST" | awk -F'\t' '
+  ' -r <(valid_hist) | awk -F'\t' '
     BEGIN { printf "\033[1m%-10s %6s %7s %9s %9s %10s\033[0m\n", "MODE", "CALLS", "ERRORS", "TOK IN", "TOK OUT", "EST COST" }
     { cost = ($6 == "?") ? "?" : sprintf("$%.4f", $6)
       style = ($1 == "TOTAL") ? "\033[1m" : ""
       printf "%s%-10s %6s %7s %9s %9s %10s\033[0m\n", style, $1, $2, $3, $4, $5, cost }'
-  local n; n=$(wc -l < "$HIST" | tr -d ' ')
+  local n; n=$(valid_hist | wc -l | tr -d ' ')
   printf '\n\033[90mOver the last %s logged transforms (history is capped ~200; older activity is not counted).\nCosts are estimates from a built-in price table; "?" = model not in it.\033[0m\n' "$n"
 }
 
