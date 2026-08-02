@@ -8,11 +8,9 @@ Select text in any app, press **⇧⌃G**, and the selection is replaced by a co
 
 No menu-bar app, no background daemon, no Electron. Each hotkey is a native macOS Quick Action that pipes your selection through a shell script and writes the result back.
 
-```
-we was going to the store yesterday and buyed some stuff
-                      ⇧⌃G
-We were going to the store yesterday and bought some stuff.
-```
+![demo](docs/demo.gif)
+
+The same engine drives the hotkeys: select text in any app, press ⇧⌃G, and the selection is replaced in place — ⌘Z undoes it as one edit.
 
 ## Install
 
