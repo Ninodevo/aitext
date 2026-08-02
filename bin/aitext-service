@@ -14,7 +14,8 @@ ACTION_BUNDLE="/System/Library/Automator/Run Shell Script.action"
 die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 
 write_wflow() {  # write_wflow <path> <command-string> <service-input-type>
-  local path="$1" cmd="$2" intype="$3"
+  local path="$1" cmd="$2" intype="$3" processes=1
+  [ "$intype" = "com.apple.Automator.nothing" ] && processes=0
   cat > "$path" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -61,7 +62,7 @@ write_wflow() {  # write_wflow <path> <command-string> <service-input-type>
   <key>workflowMetaData</key><dict>
     <key>serviceInputTypeIdentifier</key><string>$intype</string>
     <key>serviceOutputTypeIdentifier</key><string>$intype</string>
-    <key>serviceProcessesInput</key><integer>1</integer>
+    <key>serviceProcessesInput</key><integer>$processes</integer>
     <key>serviceApplicationBundleID</key><string></string>
     <key>workflowTypeIdentifier</key><string>com.apple.Automator.servicesMenu</string>
   </dict>
