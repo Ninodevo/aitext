@@ -398,7 +398,7 @@ if [ -z "$MODE" ]; then
   LIST=$(printf '"%s", ' "${modes[@]}"); LIST="${LIST%, }"
   MODE=$(osascript -e "
     try
-      set pick to choose from list {$LIST} with title \"aitext\" with prompt \"Transform the clipboard with:\" default items {\"grammar\"}
+      set pick to choose from list {$LIST} with title \"aitext\" with prompt \"Transform the CLIPBOARD — the result replaces the clipboard; press ⌘V to paste it:\" default items {\"grammar\"}
       if pick is false then return \"\"
       return item 1 of pick
     on error
@@ -419,9 +419,27 @@ TEXT=$(pbpaste)
 OUT=$(sed -n '/^---[[:space:]]*$/q; s/^output:[[:space:]]*//p' "$PROMPT_DIR/$MODE.md" | head -1)
 RESULT=$(printf '%s' "$TEXT" | "$AITEXT" "$MODE")
 
+notify() {
+  osascript - "$1" "$2" >/dev/null 2>&1 <<'APPLESCRIPT'
+on run argv
+  display notification (item 2 of argv) with title (item 1 of argv)
+end run
+APPLESCRIPT
+}
+
 case "$OUT" in
-  clipboard|notify) : ;;                       # already delivered by the dispatcher
-  *) printf '%s' "$RESULT" | pbcopy ;;
+  notify) : ;;                                 # dispatcher already showed a dialog
+  clipboard)                                   # dispatcher already filled the clipboard
+    notify "aitext: $MODE" "Done — result is on the clipboard. Press ⌘V to paste." ;;
+  *)
+    if [ "$RESULT" = "$TEXT" ]; then
+      # unchanged: either the text was already fine, or the call failed (in
+      # which case an alert just said why) — either way, say something
+      notify "aitext: $MODE" "No changes — the clipboard is as it was."
+    else
+      printf '%s' "$RESULT" | pbcopy
+      notify "aitext: $MODE" "Done — result is on the clipboard. Press ⌘V to paste."
+    fi ;;
 esac
 AITEXT_CLIP_EOF
 chmod +x "$BIN_DIR/aitext-clip"
