@@ -32,9 +32,10 @@ jobs:
 
           tools=$(ls bin | wc -l | tr -d ' ')
           modes=$(grep -cv -e '^\s*#' -e '^\s*$' hotkeys.conf | tr -d ' ')
+          nprompts=$(ls prompts | wc -l | tr -d ' ')
 
           test "$(ls "$FAKE/.local/bin" | wc -l | tr -d ' ')" -eq "$tools"
-          test "$(ls "$FAKE/.config/aitext/prompts" | wc -l | tr -d ' ')" -eq "$modes"
+          test "$(ls "$FAKE/.config/aitext/prompts" | wc -l | tr -d ' ')" -eq "$nprompts"
           test "$(ls "$FAKE/Library/Services" | wc -l | tr -d ' ')" -eq "$modes"
           test -f "$FAKE/.config/aitext/hotkeys.conf"
           test -f "$FAKE/.config/aitext/config"

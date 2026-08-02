@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# aitext-clip [mode] — run a transform on the CLIPBOARD instead of a selection.
+#
+# With no argument, shows a chooser listing every mode. The result goes back
+# to the clipboard. This is the fallback for apps where text Services don't
+# work (some Electron apps, browser fields), and for text you've already cut.
+#
+# Bound to ⇧⌃L as the "AI Clipboard" Quick Action by the installer.
+
+set -uo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+CONF_DIR="${AITEXT_CONF_DIR:-$HOME/.config/aitext}"
+PROMPT_DIR="${AITEXT_PROMPTS:-$CONF_DIR/prompts}"
+AITEXT="${AITEXT_BIN:-$HOME/.local/bin/aitext}"
+
+alert() {
+  osascript - "aitext clipboard" "$1" >/dev/null 2>&1 <<'APPLESCRIPT'
+on run argv
+  display alert (item 1 of argv) message (item 2 of argv)
+end run
+APPLESCRIPT
+}
+
+MODE="${1:-}"
+
+# collect modes from the prompt files (skip interactive-only if none chosen? no — ask works on clipboard too)
+modes=()
+for f in "$PROMPT_DIR"/*.md; do
+  [ -f "$f" ] || continue
+  modes+=("$(basename "$f" .md)")
+done
+[ "${#modes[@]}" -gt 0 ] || { alert "No prompts found in $PROMPT_DIR"; exit 0; }
+
+if [ -z "$MODE" ]; then
+  # chooser — join mode names into an AppleScript list
+  LIST=$(printf '"%s", ' "${modes[@]}"); LIST="${LIST%, }"
+  MODE=$(osascript -e "
+    try
+      set pick to choose from list {$LIST} with title \"aitext\" with prompt \"Transform the clipboard with:\" default items {\"grammar\"}
+      if pick is false then return \"\"
+      return item 1 of pick
+    on error
+      return \"\"
+    end try
+  " 2>/dev/null)
+  [ -n "$MODE" ] || exit 0   # cancelled
+fi
+
+[ -f "$PROMPT_DIR/$MODE.md" ] || { alert "No prompt named '$MODE'"; exit 0; }
+
+TEXT=$(pbpaste)
+[ -n "${TEXT//[[:space:]]/}" ] || { alert "The clipboard is empty."; exit 0; }
+
+# The dispatcher applies the mode's own output semantics; its stdout is what
+# a selection would have become, so that is what goes back on the clipboard.
+# Exception: 'clipboard' output modes already put the result there themselves.
+OUT=$(sed -n '/^---[[:space:]]*$/q; s/^output:[[:space:]]*//p' "$PROMPT_DIR/$MODE.md" | head -1)
+RESULT=$(printf '%s' "$TEXT" | "$AITEXT" "$MODE")
+
+case "$OUT" in
+  clipboard|notify) : ;;                       # already delivered by the dispatcher
+  *) printf '%s' "$RESULT" | pbcopy ;;
+esac

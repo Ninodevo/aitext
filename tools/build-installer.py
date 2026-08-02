@@ -9,7 +9,7 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TOOLS = ("aitext", "aitext-config", "aitext-keys", "aitext-log", "aitext-service", "aitext-prompts")
+TOOLS = ("aitext", "aitext-clip", "aitext-config", "aitext-keys", "aitext-log", "aitext-service", "aitext-prompts")
 
 
 def read(*parts):
@@ -44,7 +44,7 @@ def embed_prompts():
     ordered = [m for m in manifest_modes() if m in on_disk]
     ordered += [m for m in on_disk if m not in ordered]  # prompts with no hotkey
 
-    missing = [m for m in manifest_modes() if m not in on_disk]
+    missing = [m for m in manifest_modes() if m not in on_disk and m != "clip"]
     if missing:
         sys.exit(f"error: hotkeys.conf lists modes with no prompt file: {missing}")
 
@@ -131,7 +131,7 @@ if (( UNINSTALL )); then
     $PB -c "Delete :NSServicesStatus:'(null) - $name - runWorkflowAsService'" "$PBS_PLIST" >/dev/null 2>&1
   done < <(manifest_rows)
   ok "removed Quick Actions and their shortcuts"
-  rm -f "$BIN_DIR/aitext" "$BIN_DIR/aitext-config" "$BIN_DIR/aitext-keys" "$BIN_DIR/aitext-log" "$BIN_DIR/aitext-service" "$BIN_DIR/aitext-prompts"
+  rm -f "$BIN_DIR/aitext" "$BIN_DIR/aitext-clip" "$BIN_DIR/aitext-config" "$BIN_DIR/aitext-keys" "$BIN_DIR/aitext-log" "$BIN_DIR/aitext-service" "$BIN_DIR/aitext-prompts"
   ok "removed the aitext commands"
   killall -u "$USER" cfprefsd 2>/dev/null
   /System/Library/CoreServices/pbs -flush 2>/dev/null
@@ -221,6 +221,7 @@ FOOTER = r'''
 # Quick Action never fires into a "no prompt named X" alert.
 while IFS='|' read -r mode name key; do
   [[ -n "$mode" ]] || continue
+  [[ "$mode" == "clip" ]] && continue   # clipboard chooser — has no prompt file
   [[ -f "$PROMPT_DIR/$mode.md" ]] && continue
   printf 'temperature: 0.3\n---\nTODO: write the system prompt for %s here.\n' "$mode" > "$PROMPT_DIR/$mode.md"
   warn "$mode had no prompt file — wrote a stub, edit it with: aitext-prompts edit $mode"
@@ -234,7 +235,13 @@ mkdir -p "$SERVICES_DIR"
 built=0
 while IFS='|' read -r mode name key; do
   [[ -n "$mode" ]] || continue
-  if "$BIN_DIR/aitext-service" build "$mode" "$name" 2>/dev/null; then
+  if [[ "$mode" == "clip" ]]; then
+    if "$BIN_DIR/aitext-service" build-clip "$name" 2>/dev/null; then
+      ok "$name → aitext-clip (clipboard chooser)"; built=$((built + 1))
+    else
+      err "$name — could not build"
+    fi
+  elif "$BIN_DIR/aitext-service" build "$mode" "$name" 2>/dev/null; then
     ok "$name → aitext $mode"; built=$((built + 1))
   else
     err "$name — could not build"

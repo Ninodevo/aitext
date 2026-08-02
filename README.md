@@ -55,6 +55,7 @@ All shortcuts are **Shift + Control + letter**.
 | ⇧⌃Y | Draft a reply | **copies to clipboard**, selection untouched |
 | ⇧⌃X | Explain this | **shows a dialog**, selection untouched |
 | ⇧⌃I | **Ask** — type any instruction in a dialog | replaced |
+| ⇧⌃L | **Clipboard** — pick a transform, run it on the clipboard | clipboard in, clipboard out |
 
 macOS reserves seven ⇧⌃ letters for text selection — **A B E F N P V** — so avoid those when adding your own. (Source: `StandardKeyBinding.dict` in AppKit.)
 
@@ -102,7 +103,7 @@ author's voice — do not rewrite phrasing that is already correct.
 | `provider` | `openai`, `anthropic` | `openai` |
 | `model` | any model id for that provider | `gpt-5.4-nano` / `claude-haiku-4-5` |
 | `temperature` | `0`–`2`, OpenAI only; omit to use the API default | omitted |
-| `output` | `replace`, `append`, `clipboard`, `notify` | `replace` |
+| `output` | `replace`, `append`, `clipboard`, `notify`, `confirm` (preview + approve before replacing) | `replace` |
 | `sounds` | `on`, `off` — overrides the global setting | inherits |
 | `base_url` | any OpenAI-compatible endpoint (see below) | config / api.openai.com |
 | `ask` | a question — makes the mode interactive: a dialog collects the instruction at invocation time | — |
@@ -122,6 +123,10 @@ aitext-prompts test harsh "I was sort of wondering if maybe we could revisit thi
 ```
 
 That writes the prompt file, registers the Quick Action, binds the shortcut, and records it in `~/.config/aitext/hotkeys.conf` so a reinstall reproduces it.
+
+## The clipboard service (⇧⌃L)
+
+Text Services need a selection, and a few apps (some Electron apps, some browser fields) don't implement them properly. **⇧⌃L works anywhere**: it shows a chooser with every transform and runs the one you pick on the **clipboard**, writing the result back to the clipboard. Copy → ⇧⌃L → paste. Also scriptable: `aitext-clip grammar`.
 
 ## Cost
 

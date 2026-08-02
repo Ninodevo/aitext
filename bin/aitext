@@ -196,5 +196,19 @@ case "$OUT" in
   append)    printf '%s\n\n%s' "$TEXT" "$RESULT" ;;
   clipboard) printf '%s' "$RESULT" | pbcopy; printf '%s' "$TEXT" ;;
   notify)    alert "$MODE" "$RESULT"; printf '%s' "$TEXT" ;;
+  confirm)
+    # show the result first; only replace the selection if the user approves
+    CHOICE=$(osascript - "$MODE" "$RESULT" 2>/dev/null <<'APPLESCRIPT'
+on run argv
+  try
+    set r to display dialog (item 2 of argv) buttons {"Keep original", "Replace"} default button "Replace" with title ("aitext: " & item 1 of argv)
+    return button returned of r
+  on error
+    return "Keep original"
+  end try
+end run
+APPLESCRIPT
+)
+    if [ "$CHOICE" = "Replace" ]; then printf '%s' "$RESULT"; else printf '%s' "$TEXT"; fi ;;
   *)         printf '%s' "$RESULT" ;;
 esac

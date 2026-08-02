@@ -24,8 +24,11 @@ rows() {
     [ -d "$w" ] || continue
     cmd=$("$PB" -c "Print :actions:0:action:ActionParameters:COMMAND_STRING" \
           "$w/Contents/document.wflow" 2>/dev/null) || continue
-    case "$cmd" in *"/aitext"*) ;; *) continue ;; esac
-    mode=${cmd##* }
+    case "$cmd" in
+      *'/aitext-clip"'*) mode="clip" ;;
+      *"/aitext\""*)     mode=${cmd##* } ;;
+      *) continue ;;
+    esac
     name=$(basename "$w" .workflow)
     printf '%s\t%s\n' "$mode" "$name"
   done | sort

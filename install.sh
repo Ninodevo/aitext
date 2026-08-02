@@ -66,6 +66,8 @@ reply|AI Draft Reply|$^y
 explain|AI Explain This|$^x
 commit|AI Commit Message|$^m
 ask|AI Ask|$^i
+# clip is special: a no-input service that transforms the CLIPBOARD via a chooser dialog
+clip|AI Clipboard|$^l
 '
 
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
@@ -93,7 +95,7 @@ if (( UNINSTALL )); then
     $PB -c "Delete :NSServicesStatus:'(null) - $name - runWorkflowAsService'" "$PBS_PLIST" >/dev/null 2>&1
   done < <(manifest_rows)
   ok "removed Quick Actions and their shortcuts"
-  rm -f "$BIN_DIR/aitext" "$BIN_DIR/aitext-config" "$BIN_DIR/aitext-keys" "$BIN_DIR/aitext-log" "$BIN_DIR/aitext-service" "$BIN_DIR/aitext-prompts"
+  rm -f "$BIN_DIR/aitext" "$BIN_DIR/aitext-clip" "$BIN_DIR/aitext-config" "$BIN_DIR/aitext-keys" "$BIN_DIR/aitext-log" "$BIN_DIR/aitext-service" "$BIN_DIR/aitext-prompts"
   ok "removed the aitext commands"
   killall -u "$USER" cfprefsd 2>/dev/null
   /System/Library/CoreServices/pbs -flush 2>/dev/null
@@ -336,11 +338,94 @@ case "$OUT" in
   append)    printf '%s\n\n%s' "$TEXT" "$RESULT" ;;
   clipboard) printf '%s' "$RESULT" | pbcopy; printf '%s' "$TEXT" ;;
   notify)    alert "$MODE" "$RESULT"; printf '%s' "$TEXT" ;;
+  confirm)
+    # show the result first; only replace the selection if the user approves
+    CHOICE=$(osascript - "$MODE" "$RESULT" 2>/dev/null <<'APPLESCRIPT'
+on run argv
+  try
+    set r to display dialog (item 2 of argv) buttons {"Keep original", "Replace"} default button "Replace" with title ("aitext: " & item 1 of argv)
+    return button returned of r
+  on error
+    return "Keep original"
+  end try
+end run
+APPLESCRIPT
+)
+    if [ "$CHOICE" = "Replace" ]; then printf '%s' "$RESULT"; else printf '%s' "$TEXT"; fi ;;
   *)         printf '%s' "$RESULT" ;;
 esac
 AITEXT_EOF
 chmod +x "$BIN_DIR/aitext"
 ok "$BIN_DIR/aitext"
+
+cat > "$BIN_DIR/aitext-clip" <<'AITEXT_CLIP_EOF'
+#!/usr/bin/env bash
+# aitext-clip [mode] — run a transform on the CLIPBOARD instead of a selection.
+#
+# With no argument, shows a chooser listing every mode. The result goes back
+# to the clipboard. This is the fallback for apps where text Services don't
+# work (some Electron apps, browser fields), and for text you've already cut.
+#
+# Bound to ⇧⌃L as the "AI Clipboard" Quick Action by the installer.
+
+set -uo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+CONF_DIR="${AITEXT_CONF_DIR:-$HOME/.config/aitext}"
+PROMPT_DIR="${AITEXT_PROMPTS:-$CONF_DIR/prompts}"
+AITEXT="${AITEXT_BIN:-$HOME/.local/bin/aitext}"
+
+alert() {
+  osascript - "aitext clipboard" "$1" >/dev/null 2>&1 <<'APPLESCRIPT'
+on run argv
+  display alert (item 1 of argv) message (item 2 of argv)
+end run
+APPLESCRIPT
+}
+
+MODE="${1:-}"
+
+# collect modes from the prompt files (skip interactive-only if none chosen? no — ask works on clipboard too)
+modes=()
+for f in "$PROMPT_DIR"/*.md; do
+  [ -f "$f" ] || continue
+  modes+=("$(basename "$f" .md)")
+done
+[ "${#modes[@]}" -gt 0 ] || { alert "No prompts found in $PROMPT_DIR"; exit 0; }
+
+if [ -z "$MODE" ]; then
+  # chooser — join mode names into an AppleScript list
+  LIST=$(printf '"%s", ' "${modes[@]}"); LIST="${LIST%, }"
+  MODE=$(osascript -e "
+    try
+      set pick to choose from list {$LIST} with title \"aitext\" with prompt \"Transform the clipboard with:\" default items {\"grammar\"}
+      if pick is false then return \"\"
+      return item 1 of pick
+    on error
+      return \"\"
+    end try
+  " 2>/dev/null)
+  [ -n "$MODE" ] || exit 0   # cancelled
+fi
+
+[ -f "$PROMPT_DIR/$MODE.md" ] || { alert "No prompt named '$MODE'"; exit 0; }
+
+TEXT=$(pbpaste)
+[ -n "${TEXT//[[:space:]]/}" ] || { alert "The clipboard is empty."; exit 0; }
+
+# The dispatcher applies the mode's own output semantics; its stdout is what
+# a selection would have become, so that is what goes back on the clipboard.
+# Exception: 'clipboard' output modes already put the result there themselves.
+OUT=$(sed -n '/^---[[:space:]]*$/q; s/^output:[[:space:]]*//p' "$PROMPT_DIR/$MODE.md" | head -1)
+RESULT=$(printf '%s' "$TEXT" | "$AITEXT" "$MODE")
+
+case "$OUT" in
+  clipboard|notify) : ;;                       # already delivered by the dispatcher
+  *) printf '%s' "$RESULT" | pbcopy ;;
+esac
+AITEXT_CLIP_EOF
+chmod +x "$BIN_DIR/aitext-clip"
+ok "$BIN_DIR/aitext-clip"
 
 cat > "$BIN_DIR/aitext-config" <<'AITEXT_CONFIG_EOF'
 #!/usr/bin/env bash
@@ -504,8 +589,11 @@ rows() {
     [ -d "$w" ] || continue
     cmd=$("$PB" -c "Print :actions:0:action:ActionParameters:COMMAND_STRING" \
           "$w/Contents/document.wflow" 2>/dev/null) || continue
-    case "$cmd" in *"/aitext"*) ;; *) continue ;; esac
-    mode=${cmd##* }
+    case "$cmd" in
+      *'/aitext-clip"'*) mode="clip" ;;
+      *"/aitext\""*)     mode=${cmd##* } ;;
+      *) continue ;;
+    esac
     name=$(basename "$w" .workflow)
     printf '%s\t%s\n' "$mode" "$name"
   done | sort
@@ -741,6 +829,62 @@ ACTION_BUNDLE="/System/Library/Automator/Run Shell Script.action"
 
 die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 
+write_wflow() {  # write_wflow <path> <command-string> <service-input-type>
+  local path="$1" cmd="$2" intype="$3"
+  cat > "$path" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>AMApplicationBuild</key><string>528</string>
+  <key>AMApplicationVersion</key><string>2.10</string>
+  <key>AMDocumentVersion</key><string>2</string>
+  <key>actions</key><array><dict>
+    <key>action</key><dict>
+      <key>AMActionVersion</key><string>2.0.3</string>
+      <key>AMParameterProperties</key><dict>
+        <key>COMMAND_STRING</key><dict/>
+        <key>CheckedForUserDefaultShell</key><dict/>
+        <key>inputMethod</key><dict/>
+        <key>shell</key><dict/>
+        <key>source</key><dict/>
+      </dict>
+      <key>ActionBundlePath</key><string>$ACTION_BUNDLE</string>
+      <key>ActionName</key><string>Run Shell Script</string>
+      <key>ActionParameters</key><dict>
+        <key>COMMAND_STRING</key><string>$cmd</string>
+        <key>CheckedForUserDefaultShell</key><true/>
+        <key>inputMethod</key><integer>0</integer>
+        <key>shell</key><string>/bin/bash</string>
+        <key>source</key><string></string>
+      </dict>
+      <key>BundleIdentifier</key><string>com.apple.RunShellScript</string>
+      <key>CFBundleVersion</key><string>2.0.3</string>
+      <key>CanShowSelectedItemsWhenRun</key><false/>
+      <key>CanShowWhenRun</key><true/>
+      <key>Category</key><array><string>AMCategoryUtilities</string></array>
+      <key>Class Name</key><string>RunShellScriptAction</string>
+      <key>InputUUID</key><string>$(uuidgen)</string>
+      <key>OutputUUID</key><string>$(uuidgen)</string>
+      <key>UUID</key><string>$(uuidgen)</string>
+      <key>UnlocalizedApplications</key><array><string>Automator</string></array>
+      <key>arguments</key><dict/>
+      <key>isViewVisible</key><integer>1</integer>
+      <key>location</key><string>309.000000:253.000000</string>
+    </dict>
+    <key>isViewVisible</key><integer>1</integer>
+  </dict></array>
+  <key>connectors</key><dict/>
+  <key>workflowMetaData</key><dict>
+    <key>serviceInputTypeIdentifier</key><string>$intype</string>
+    <key>serviceOutputTypeIdentifier</key><string>$intype</string>
+    <key>serviceProcessesInput</key><integer>1</integer>
+    <key>serviceApplicationBundleID</key><string></string>
+    <key>workflowTypeIdentifier</key><string>com.apple.Automator.servicesMenu</string>
+  </dict>
+</dict></plist>
+PLIST
+}
+
 build() {
   local mode="${1:-}" name="${2:-}"
   if [ -z "$mode" ] || [ -z "$name" ]; then die "usage: aitext-service build <mode> <Menu Name>"; fi
@@ -768,58 +912,40 @@ build() {
 </dict></plist>
 PLIST
 
-  cat > "$c/document.wflow" <<PLIST
+  write_wflow "$c/document.wflow" "exec \"\$HOME/.local/bin/aitext\" $mode" com.apple.Automator.text
+
+  if ! plutil -lint "$c/Info.plist" >/dev/null 2>&1 || ! plutil -lint "$c/document.wflow" >/dev/null 2>&1; then
+    rm -rf "$w"; die "generated a malformed plist for '$name' — not installed"
+  fi
+  /System/Library/CoreServices/pbs -flush 2>/dev/null || true
+}
+
+
+build_clip() {  # build_clip <Menu Name> — no-input service running aitext-clip
+  local name="${1:-}"
+  if [ -z "$name" ]; then die "usage: aitext-service build-clip <Menu Name>"; fi
+  case "$name" in
+    *[\&\<\>\|]*|*"'"*) die "menu name cannot contain & < > | or ' (got '$name')" ;;
+  esac
+  [ -d "$ACTION_BUNDLE" ] || die "missing $ACTION_BUNDLE"
+
+  local w="$SERVICES/$name.workflow" c
+  c="$w/Contents"
+  rm -rf "$w"; mkdir -p "$c" || die "cannot write to $SERVICES"
+
+  cat > "$c/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>AMApplicationBuild</key><string>528</string>
-  <key>AMApplicationVersion</key><string>2.10</string>
-  <key>AMDocumentVersion</key><string>2</string>
-  <key>actions</key><array><dict>
-    <key>action</key><dict>
-      <key>AMActionVersion</key><string>2.0.3</string>
-      <key>AMParameterProperties</key><dict>
-        <key>COMMAND_STRING</key><dict/>
-        <key>CheckedForUserDefaultShell</key><dict/>
-        <key>inputMethod</key><dict/>
-        <key>shell</key><dict/>
-        <key>source</key><dict/>
-      </dict>
-      <key>ActionBundlePath</key><string>$ACTION_BUNDLE</string>
-      <key>ActionName</key><string>Run Shell Script</string>
-      <key>ActionParameters</key><dict>
-        <key>COMMAND_STRING</key><string>exec "\$HOME/.local/bin/aitext" $mode</string>
-        <key>CheckedForUserDefaultShell</key><true/>
-        <key>inputMethod</key><integer>0</integer>
-        <key>shell</key><string>/bin/bash</string>
-        <key>source</key><string></string>
-      </dict>
-      <key>BundleIdentifier</key><string>com.apple.RunShellScript</string>
-      <key>CFBundleVersion</key><string>2.0.3</string>
-      <key>CanShowSelectedItemsWhenRun</key><false/>
-      <key>CanShowWhenRun</key><true/>
-      <key>Category</key><array><string>AMCategoryUtilities</string></array>
-      <key>Class Name</key><string>RunShellScriptAction</string>
-      <key>InputUUID</key><string>$(uuidgen)</string>
-      <key>OutputUUID</key><string>$(uuidgen)</string>
-      <key>UUID</key><string>$(uuidgen)</string>
-      <key>UnlocalizedApplications</key><array><string>Automator</string></array>
-      <key>arguments</key><dict/>
-      <key>isViewVisible</key><integer>1</integer>
-      <key>location</key><string>309.000000:253.000000</string>
-    </dict>
-    <key>isViewVisible</key><integer>1</integer>
+  <key>NSServices</key><array><dict>
+    <key>NSMenuItem</key><dict><key>default</key><string>$name</string></dict>
+    <key>NSMessage</key><string>runWorkflowAsService</string>
   </dict></array>
-  <key>connectors</key><dict/>
-  <key>workflowMetaData</key><dict>
-    <key>serviceInputTypeIdentifier</key><string>com.apple.Automator.text</string>
-    <key>serviceOutputTypeIdentifier</key><string>com.apple.Automator.text</string>
-    <key>serviceProcessesInput</key><integer>1</integer>
-    <key>serviceApplicationBundleID</key><string></string>
-    <key>workflowTypeIdentifier</key><string>com.apple.Automator.servicesMenu</string>
-  </dict>
 </dict></plist>
 PLIST
+
+  # shellcheck disable=SC2016  # $HOME must stay literal — the service expands it at runtime
+  write_wflow "$c/document.wflow" 'exec "$HOME/.local/bin/aitext-clip"' com.apple.Automator.nothing
 
   if ! plutil -lint "$c/Info.plist" >/dev/null 2>&1 || ! plutil -lint "$c/document.wflow" >/dev/null 2>&1; then
     rm -rf "$w"; die "generated a malformed plist for '$name' — not installed"
@@ -836,8 +962,9 @@ remove() {
 
 case "${1:-}" in
   build)  shift; build "$@" ;;
+  build-clip) shift; build_clip "$@" ;;
   remove) shift; remove "$@" ;;
-  *) die "usage: aitext-service build <mode> <Menu Name> | remove <Menu Name>" ;;
+  *) die "usage: aitext-service build <mode> <Menu Name> | build-clip <Menu Name> | remove <Menu Name>" ;;
 esac
 AITEXT_SERVICE_EOF
 chmod +x "$BIN_DIR/aitext-service"
@@ -960,7 +1087,7 @@ cmd_set() {
     *) die "key must be one of: model temperature output provider sounds" ;;
   esac
   case "$key" in
-    output)   case "$val" in replace|append|clipboard|notify) ;; *) die "output must be replace|append|clipboard|notify" ;; esac ;;
+    output)   case "$val" in replace|append|clipboard|notify|confirm) ;; *) die "output must be replace|append|clipboard|notify|confirm" ;; esac ;;
     provider) case "$val" in openai|anthropic) ;; *) die "provider must be openai|anthropic" ;; esac ;;
     sounds)   case "$val" in on|off) ;; *) die "sounds must be on|off" ;; esac ;;
     temperature) printf '%s' "$val" | grep -qE '^([01](\.[0-9]+)?|2(\.0+)?)$' \
@@ -989,6 +1116,7 @@ cmd_new() {
   local mode="${1:-}" name="${2:-}" combo="${3:-}"
   [ -n "$mode" ] || die "usage: aitext-prompts new <mode> [Menu Name] [combo]"
   printf '%s' "$mode" | grep -qE '^[a-z0-9_-]+$' || die "mode must be lowercase letters, digits, - or _"
+  [ "$mode" = "clip" ] && die "'clip' is reserved for the built-in clipboard service"
   [ -f "$PROMPT_DIR/$mode.md" ] && die "prompt '$mode' already exists — edit it with: aitext-prompts edit $mode"
   [ -n "$name" ] || name="AI $(printf '%s' "$mode" | tr '_-' '  ' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1')"
   case "$name" in
@@ -1046,6 +1174,7 @@ cmd_rm() {
     esac
   done
   [ -n "$mode" ] || die "usage: aitext-prompts rm <mode> [--keep-prompt]"
+  [ "$mode" = "clip" ] && die "'clip' is the built-in clipboard service — remove its row from $MANIFEST and re-run install.sh instead"
 
   local name; name=$(name_for "$mode" 2>/dev/null) || name=""
   if [ -n "$name" ]; then
@@ -1255,6 +1384,7 @@ PROMPT_EOF
 # Quick Action never fires into a "no prompt named X" alert.
 while IFS='|' read -r mode name key; do
   [[ -n "$mode" ]] || continue
+  [[ "$mode" == "clip" ]] && continue   # clipboard chooser — has no prompt file
   [[ -f "$PROMPT_DIR/$mode.md" ]] && continue
   printf 'temperature: 0.3\n---\nTODO: write the system prompt for %s here.\n' "$mode" > "$PROMPT_DIR/$mode.md"
   warn "$mode had no prompt file — wrote a stub, edit it with: aitext-prompts edit $mode"
@@ -1268,7 +1398,13 @@ mkdir -p "$SERVICES_DIR"
 built=0
 while IFS='|' read -r mode name key; do
   [[ -n "$mode" ]] || continue
-  if "$BIN_DIR/aitext-service" build "$mode" "$name" 2>/dev/null; then
+  if [[ "$mode" == "clip" ]]; then
+    if "$BIN_DIR/aitext-service" build-clip "$name" 2>/dev/null; then
+      ok "$name → aitext-clip (clipboard chooser)"; built=$((built + 1))
+    else
+      err "$name — could not build"
+    fi
+  elif "$BIN_DIR/aitext-service" build "$mode" "$name" 2>/dev/null; then
     ok "$name → aitext $mode"; built=$((built + 1))
   else
     err "$name — could not build"
