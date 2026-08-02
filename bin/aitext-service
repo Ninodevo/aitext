@@ -15,7 +15,7 @@ die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 
 build() {
   local mode="${1:-}" name="${2:-}"
-  [ -n "$mode" ] && [ -n "$name" ] || die "usage: aitext-service build <mode> <Menu Name>"
+  if [ -z "$mode" ] || [ -z "$name" ]; then die "usage: aitext-service build <mode> <Menu Name>"; fi
   printf '%s' "$mode" | grep -qE '^[a-z0-9_-]+$' \
     || die "mode must be lowercase letters, digits, - or _ (got '$mode')"
   case "$name" in

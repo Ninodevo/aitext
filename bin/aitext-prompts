@@ -107,7 +107,7 @@ cmd_test() {
 
 cmd_set() {
   local mode="${1:-}" key="${2:-}" val="${3:-}"
-  [ -n "$mode" ] && [ -n "$key" ] && [ -n "$val" ] || die "usage: aitext-prompts set <mode> <key> <value>"
+  if [ -z "$mode" ] || [ -z "$key" ] || [ -z "$val" ]; then die "usage: aitext-prompts set <mode> <key> <value>"; fi
   need_prompt "$mode"
   case "$key" in
     model|temperature|output|provider|sounds) ;;
@@ -232,7 +232,9 @@ cmd_doctor() {
     mode=$(basename "$f" .md)
     provider=$(field "$mode" provider); provider=${provider:-openai}
     model=$(field "$mode" model)
-    [ -n "$model" ] || { [ "$provider" = "openai" ] && model="gpt-5.4-nano" || model="claude-haiku-4-5"; }
+    if [ -z "$model" ]; then
+      if [ "$provider" = "openai" ]; then model="gpt-5.4-nano"; else model="claude-haiku-4-5"; fi
+    fi
     ask=$(field "$mode" ask)
     if [ -n "$ask" ]; then
       printf '%-9s %-10s %-18s \033[90mskipped (interactive — test by hotkey)\033[0m\n' "$mode" "$provider" "$model"

@@ -103,7 +103,7 @@ cmd_list() {
 
 cmd_set() {
   local mode="${1:-}" combo="${2:-}"
-  [ -n "$mode" ] && [ -n "$combo" ] || die "usage: aitext-keys set <mode> <combo>"
+  if [ -z "$mode" ] || [ -z "$combo" ]; then die "usage: aitext-keys set <mode> <combo>"; fi
   local name; name=$(name_for "$mode") || die "no Quick Action for mode '$mode' (see: aitext-keys)"
   local key;  key=$(parse_combo "$combo") || exit 1
   local letter=${key#"${key%?}"}

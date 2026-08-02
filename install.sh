@@ -412,7 +412,7 @@ validate() {  # validate <key> <value>
 
 cmd_set() {
   local key="${1:-}" val="${2:-}"
-  [ -n "$key" ] && [ -n "$val" ] || die "usage: aitext-config set <key> <value>"
+  if [ -z "$key" ] || [ -z "$val" ]; then die "usage: aitext-config set <key> <value>"; fi
   valid_key "$key" || die "unknown key '$key' — valid: $KEYS"
   validate "$key" "$val"
 
@@ -583,7 +583,7 @@ cmd_list() {
 
 cmd_set() {
   local mode="${1:-}" combo="${2:-}"
-  [ -n "$mode" ] && [ -n "$combo" ] || die "usage: aitext-keys set <mode> <combo>"
+  if [ -z "$mode" ] || [ -z "$combo" ]; then die "usage: aitext-keys set <mode> <combo>"; fi
   local name; name=$(name_for "$mode") || die "no Quick Action for mode '$mode' (see: aitext-keys)"
   local key;  key=$(parse_combo "$combo") || exit 1
   local letter=${key#"${key%?}"}
@@ -743,7 +743,7 @@ die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 
 build() {
   local mode="${1:-}" name="${2:-}"
-  [ -n "$mode" ] && [ -n "$name" ] || die "usage: aitext-service build <mode> <Menu Name>"
+  if [ -z "$mode" ] || [ -z "$name" ]; then die "usage: aitext-service build <mode> <Menu Name>"; fi
   printf '%s' "$mode" | grep -qE '^[a-z0-9_-]+$' \
     || die "mode must be lowercase letters, digits, - or _ (got '$mode')"
   case "$name" in
@@ -953,7 +953,7 @@ cmd_test() {
 
 cmd_set() {
   local mode="${1:-}" key="${2:-}" val="${3:-}"
-  [ -n "$mode" ] && [ -n "$key" ] && [ -n "$val" ] || die "usage: aitext-prompts set <mode> <key> <value>"
+  if [ -z "$mode" ] || [ -z "$key" ] || [ -z "$val" ]; then die "usage: aitext-prompts set <mode> <key> <value>"; fi
   need_prompt "$mode"
   case "$key" in
     model|temperature|output|provider|sounds) ;;
@@ -1078,7 +1078,9 @@ cmd_doctor() {
     mode=$(basename "$f" .md)
     provider=$(field "$mode" provider); provider=${provider:-openai}
     model=$(field "$mode" model)
-    [ -n "$model" ] || { [ "$provider" = "openai" ] && model="gpt-5.4-nano" || model="claude-haiku-4-5"; }
+    if [ -z "$model" ]; then
+      if [ "$provider" = "openai" ]; then model="gpt-5.4-nano"; else model="claude-haiku-4-5"; fi
+    fi
     ask=$(field "$mode" ask)
     if [ -n "$ask" ]; then
       printf '%-9s %-10s %-18s \033[90mskipped (interactive — test by hotkey)\033[0m\n' "$mode" "$provider" "$model"

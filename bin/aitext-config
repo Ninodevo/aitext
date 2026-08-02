@@ -67,7 +67,7 @@ validate() {  # validate <key> <value>
 
 cmd_set() {
   local key="${1:-}" val="${2:-}"
-  [ -n "$key" ] && [ -n "$val" ] || die "usage: aitext-config set <key> <value>"
+  if [ -z "$key" ] || [ -z "$val" ]; then die "usage: aitext-config set <key> <value>"; fi
   valid_key "$key" || die "unknown key '$key' — valid: $KEYS"
   validate "$key" "$val"
 
