@@ -168,10 +168,12 @@ Every transform is logged to `~/.local/state/aitext/history.jsonl` (capped ~200 
 
 ## Anthropic (optional)
 
-`explain` uses Claude. Add a key, or point the prompt at OpenAI instead:
+Every shipped prompt uses OpenAI. To run one on Claude, add a key and set `provider: anthropic` plus a Claude `model:` in that prompt:
 
 ```bash
 security add-generic-password -s ANTHROPIC_API_KEY -a "$USER" -w 'sk-ant-...' -U
+aitext-prompts set explain provider anthropic
+aitext-prompts set explain model claude-opus-5
 ```
 
 ## How it works

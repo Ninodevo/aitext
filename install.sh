@@ -1477,8 +1477,7 @@ PROMPT_EOF
 
 write_prompt explain <<'PROMPT_EOF'
 output: notify
-provider: anthropic
-model: claude-opus-5
+model: smart
 ---
 Explain the selected text plainly: what it is, what it does or means, and anything a careful reader should notice. A few sentences at most. If it is code, say what it does and flag anything suspicious.
 PROMPT_EOF
@@ -1615,8 +1614,8 @@ else
 fi
 
 security find-generic-password -s ANTHROPIC_API_KEY >/dev/null 2>&1 \
-  && ok "ANTHROPIC_API_KEY present (the 'explain' hotkey will work)" \
-  || echo "     (optional) ANTHROPIC_API_KEY not set — 'explain' will show an alert until you add one"
+  && ok "ANTHROPIC_API_KEY present (prompts with provider: anthropic will work)" \
+  || echo "     (optional) ANTHROPIC_API_KEY not set — only needed for prompts with provider: anthropic"
 
 # --------------------------------------------------------------------------
 # verify

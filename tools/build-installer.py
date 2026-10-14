@@ -336,8 +336,8 @@ else
 fi
 
 security find-generic-password -s ANTHROPIC_API_KEY >/dev/null 2>&1 \
-  && ok "ANTHROPIC_API_KEY present (the 'explain' hotkey will work)" \
-  || echo "     (optional) ANTHROPIC_API_KEY not set — 'explain' will show an alert until you add one"
+  && ok "ANTHROPIC_API_KEY present (prompts with provider: anthropic will work)" \
+  || echo "     (optional) ANTHROPIC_API_KEY not set — only needed for prompts with provider: anthropic"
 
 # --------------------------------------------------------------------------
 # verify
