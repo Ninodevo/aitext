@@ -114,7 +114,7 @@ Edits take effect on the next keypress — no reinstall. Every prompt gets this 
 
 **If a transform reports "no changes":** the model genuinely returned your text unchanged — the pipeline ran fine. Cheap models play it safe on badly garbled input (`gpt-5.4-nano` will capitalize `this a boea sstong` but won't guess at the broken words). Point that prompt at a stronger model if you want more: `aitext-prompts set grammar model gpt-5.6-luna`.
 
-**A model gotcha worth knowing:** some models reject a non-default `temperature` (`gpt-5.6-luna` is one). If a transform silently returns your text unchanged with an alert about temperature, delete the `temperature:` line.
+**A model gotcha worth knowing:** some models reject a non-default `temperature` (`gpt-5.6-luna` and `gpt-6-luna` are two). If a transform silently returns your text unchanged with an alert about temperature, delete the `temperature:` line. This matters when retargeting an alias: `model_cheap` also drives every OpenAI prompt without a `model:` line, and most of those set a temperature.
 
 ## Adding a transform
 
@@ -136,8 +136,9 @@ Text Services need a selection, and a few apps (some Electron apps, some browser
 
 | Model | $/1M in / out | Per press | At 50/day |
 |---|---|---|---|
+| `gpt-6-luna` | $0.10 / $0.50 | $0.0002 | $0.26/mo |
 | `gpt-5.4-nano` | $0.20 / $1.25 | $0.0004 | $0.62/mo |
-| `gpt-5.6-luna` | $1 / $6 | $0.0020 | $3.05/mo |
+| `gpt-5.6-luna` | $0.20 / $1.20 | $0.0004 | $0.60/mo |
 | `claude-haiku-4-5` | $1 / $5 | $0.0017 | $2.55/mo |
 
 Nothing here is expensive enough to choose on price. Choose on instruction-following instead: the failure that actually costs you is a model ignoring "return only the text" and pasting *"Here's the corrected version:"* into your document.

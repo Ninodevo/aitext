@@ -262,8 +262,15 @@ if (( DO_SHORTCUTS )); then
     $PB -c "Delete :NSServicesStatus:'(null) - $name - runWorkflowAsService'" "$PBS_PLIST" >/dev/null 2>&1
   done < <(manifest_rows)
 
+  # macOS stores modifiers in any order (System Settings writes ^$g, we write $^g)
+  canon_key() {
+    local m=${1%?} o="" c
+    for c in @ '$' '^' '~'; do [[ $m == *"$c"* ]] && o+=$c; done
+    printf '%s%s\n' "$o" "${1: -1}"
+  }
   taken=$($PB -c "Print :NSServicesStatus" "$PBS_PLIST" 2>/dev/null \
-          | grep -o 'key_equivalent = .*' | awk '{print $3}' || true)
+          | grep -o 'key_equivalent = .*' | awk '{print $3}' \
+          | while IFS= read -r t; do canon_key "$t"; done || true)
 
   while IFS='|' read -r mode name key; do
     [[ -n "$mode" ]] || continue
@@ -276,7 +283,7 @@ if (( DO_SHORTCUTS )); then
       continue
     fi
     k=":NSServicesStatus:'(null) - $name - runWorkflowAsService'"
-    if [[ -n "$taken" ]] && grep -qxF "$key" <<<"$taken"; then
+    if [[ -n "$taken" ]] && grep -qxF "$(canon_key "$key")" <<<"$taken"; then
       warn "$name — $key already bound by another service, left unassigned"
       continue
     fi
