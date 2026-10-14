@@ -235,7 +235,7 @@ cmd_doctor() {
     provider=$(field "$mode" provider); provider=${provider:-openai}
     model=$(field "$mode" model)
     if [ -z "$model" ]; then
-      if [ "$provider" = "openai" ]; then model="gpt-5.4-nano"; else model="claude-haiku-4-5"; fi
+      if [ "$provider" = "openai" ]; then model="cheap"; else model="claude-haiku-4-5"; fi
     fi
     case "$model" in
       cheap) model="cheap→$("$HOME/.local/bin/aitext-config" get model_cheap 2>/dev/null)" ;;

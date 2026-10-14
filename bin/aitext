@@ -140,7 +140,7 @@ play "$SND_START"
 
 case "$PROVIDER" in
   openai)
-    MODEL="${MODEL:-gpt-5.4-nano}"
+    MODEL="${MODEL:-$(conf model_cheap gpt-5.4-nano)}"
     DEFAULT_BASE="https://api.openai.com/v1"
     BASE="${BASE_URL:-$(conf openai_base_url "$DEFAULT_BASE")}"
     BASE="${BASE%/}"

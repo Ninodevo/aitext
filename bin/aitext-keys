@@ -50,6 +50,12 @@ pretty() {
     | tr 'abcdefghijklmnopqrstuvwxyz' 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 }
 
+canon_key() {
+  local m=${1%?} o="" c
+  for c in @ '$' '^' '~'; do [[ $m == *"$c"* ]] && o+=$c; done
+  printf '%s%s' "$o" "${1: -1}"
+}
+
 parse_combo() {
   local raw="$1"
   case "$raw" in
@@ -118,9 +124,17 @@ cmd_set() {
   fi
   local other
   other=$("$PB" -c "Print :NSServicesStatus" "$PLIST" 2>/dev/null \
-          | grep -B20 "key_equivalent = $(printf '%s' "$key" | sed 's/[][\.*^$/]/\\&/g')\$" \
-          | grep -o "(null) - [^-]* - runWorkflowAsService" | tail -1 | sed 's/(null) - //;s/ - runWorkflowAsService//')
-  if [ -n "$other" ] && [ "$other" != "$name" ]; then
+          | awk -v want="$(canon_key "$key")" '
+              / = Dict \{$/ { svc = $0; sub(/^ *(\(null\) - )?/, "", svc); sub(/( - runWorkflowAsService)? = Dict \{$/, "", svc) }
+              $1 == "key_equivalent" && canon($3) == want { print svc }
+              function canon(k,  m, o) {
+                m = substr(k, 1, length(k) - 1); o = ""
+                if (index(m, "@")) o = o "@"; if (index(m, "$")) o = o "$"
+                if (index(m, "^")) o = o "^"; if (index(m, "~")) o = o "~"
+                return o substr(k, length(k))
+              }' \
+          | grep -vxF "$name" | head -1)
+  if [ -n "$other" ]; then
     printf '\033[33m!\033[0m %s already uses %s — both will be ambiguous.\n' "$other" "$(pretty "$key")"
   fi
   local k; k=$(keypath "$name")

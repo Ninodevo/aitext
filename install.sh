@@ -283,7 +283,7 @@ play "$SND_START"
 
 case "$PROVIDER" in
   openai)
-    MODEL="${MODEL:-gpt-5.4-nano}"
+    MODEL="${MODEL:-$(conf model_cheap gpt-5.4-nano)}"
     DEFAULT_BASE="https://api.openai.com/v1"
     BASE="${BASE_URL:-$(conf openai_base_url "$DEFAULT_BASE")}"
     BASE="${BASE%/}"
@@ -653,6 +653,12 @@ pretty() {
     | tr 'abcdefghijklmnopqrstuvwxyz' 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 }
 
+canon_key() {
+  local m=${1%?} o="" c
+  for c in @ '$' '^' '~'; do [[ $m == *"$c"* ]] && o+=$c; done
+  printf '%s%s' "$o" "${1: -1}"
+}
+
 parse_combo() {
   local raw="$1"
   case "$raw" in
@@ -721,9 +727,17 @@ cmd_set() {
   fi
   local other
   other=$("$PB" -c "Print :NSServicesStatus" "$PLIST" 2>/dev/null \
-          | grep -B20 "key_equivalent = $(printf '%s' "$key" | sed 's/[][\.*^$/]/\\&/g')\$" \
-          | grep -o "(null) - [^-]* - runWorkflowAsService" | tail -1 | sed 's/(null) - //;s/ - runWorkflowAsService//')
-  if [ -n "$other" ] && [ "$other" != "$name" ]; then
+          | awk -v want="$(canon_key "$key")" '
+              / = Dict \{$/ { svc = $0; sub(/^ *(\(null\) - )?/, "", svc); sub(/( - runWorkflowAsService)? = Dict \{$/, "", svc) }
+              $1 == "key_equivalent" && canon($3) == want { print svc }
+              function canon(k,  m, o) {
+                m = substr(k, 1, length(k) - 1); o = ""
+                if (index(m, "@")) o = o "@"; if (index(m, "$")) o = o "$"
+                if (index(m, "^")) o = o "^"; if (index(m, "~")) o = o "~"
+                return o substr(k, length(k))
+              }' \
+          | grep -vxF "$name" | head -1)
+  if [ -n "$other" ]; then
     printf '\033[33m!\033[0m %s already uses %s — both will be ambiguous.\n' "$other" "$(pretty "$key")"
   fi
   local k; k=$(keypath "$name")
@@ -847,9 +861,13 @@ cmd_stats() {
       "gpt-5.4-nano":   [0.20, 1.25],
       "gpt-5.4-mini":   [0.75, 4.50],
       "gpt-5.4":        [2.50, 15],
-      "gpt-5.6-luna":   [1,    6],
-      "gpt-5.6-terra":  [2.50, 15],
-      "gpt-5.6-sol":    [5,    30],
+      "gpt-5.6-luna":   [0.20, 1.20],
+      "gpt-5.6-terra":  [2,    12],
+      "gpt-5.6-sol":    [4,    20],
+      "gpt-6-luna":     [0.10, 0.50],
+      "gpt-6-sol":      [2,    10],
+      "gpt-6.1-sol":    [2,    10],
+      "gpt-6-astra":    [10,   50],
       "claude-haiku-4-5": [1,  5],
       "claude-sonnet-5":  [3,  15],
       "claude-opus-5":    [5,  25]
@@ -1296,7 +1314,7 @@ cmd_doctor() {
     provider=$(field "$mode" provider); provider=${provider:-openai}
     model=$(field "$mode" model)
     if [ -z "$model" ]; then
-      if [ "$provider" = "openai" ]; then model="gpt-5.4-nano"; else model="claude-haiku-4-5"; fi
+      if [ "$provider" = "openai" ]; then model="cheap"; else model="claude-haiku-4-5"; fi
     fi
     case "$model" in
       cheap) model="cheap→$("$HOME/.local/bin/aitext-config" get model_cheap 2>/dev/null)" ;;
@@ -1523,8 +1541,15 @@ if (( DO_SHORTCUTS )); then
     $PB -c "Delete :NSServicesStatus:'(null) - $name - runWorkflowAsService'" "$PBS_PLIST" >/dev/null 2>&1
   done < <(manifest_rows)
 
+  # macOS stores modifiers in any order (System Settings writes ^$g, we write $^g)
+  canon_key() {
+    local m=${1%?} o="" c
+    for c in @ '$' '^' '~'; do [[ $m == *"$c"* ]] && o+=$c; done
+    printf '%s%s\n' "$o" "${1: -1}"
+  }
   taken=$($PB -c "Print :NSServicesStatus" "$PBS_PLIST" 2>/dev/null \
-          | grep -o 'key_equivalent = .*' | awk '{print $3}' || true)
+          | grep -o 'key_equivalent = .*' | awk '{print $3}' \
+          | while IFS= read -r t; do canon_key "$t"; done || true)
 
   while IFS='|' read -r mode name key; do
     [[ -n "$mode" ]] || continue
@@ -1537,7 +1562,7 @@ if (( DO_SHORTCUTS )); then
       continue
     fi
     k=":NSServicesStatus:'(null) - $name - runWorkflowAsService'"
-    if [[ -n "$taken" ]] && grep -qxF "$key" <<<"$taken"; then
+    if [[ -n "$taken" ]] && grep -qxF "$(canon_key "$key")" <<<"$taken"; then
       warn "$name — $key already bound by another service, left unassigned"
       continue
     fi
