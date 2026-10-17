@@ -37,7 +37,7 @@ DEFAULT_sound_error=/System/Library/Sounds/Basso.aiff
 DEFAULT_sound_volume=0.35
 DEFAULT_history=on
 DEFAULT_openai_base_url=https://api.openai.com/v1
-DEFAULT_model_cheap=gpt-5.4-nano
+DEFAULT_model_cheap=gpt-6-luna
 DEFAULT_model_smart=gpt-5.6-luna
 KEYS="sounds sound_start sound_done sound_error sound_volume history openai_base_url model_cheap model_smart"
 

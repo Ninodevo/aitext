@@ -94,7 +94,7 @@ PROVIDER=$(field provider); PROVIDER="${PROVIDER:-openai}"
 MODEL=$(field model)
 # aliases: point prompts at a role, retarget every prompt in one config line
 case "$MODEL" in
-  cheap) MODEL=$(conf model_cheap gpt-5.4-nano) ;;
+  cheap) MODEL=$(conf model_cheap gpt-6-luna) ;;
   smart) MODEL=$(conf model_smart gpt-5.6-luna) ;;
 esac
 TEMP=$(field temperature)   # empty = omit from the request (use the API default)
@@ -140,7 +140,7 @@ play "$SND_START"
 
 case "$PROVIDER" in
   openai)
-    MODEL="${MODEL:-$(conf model_cheap gpt-5.4-nano)}"
+    MODEL="${MODEL:-$(conf model_cheap gpt-6-luna)}"
     DEFAULT_BASE="https://api.openai.com/v1"
     BASE="${BASE_URL:-$(conf openai_base_url "$DEFAULT_BASE")}"
     BASE="${BASE%/}"
@@ -151,9 +151,14 @@ case "$PROVIDER" in
     fi
     REQ=$(jq -n --arg m "$MODEL" --arg s "$SYSTEM" --arg u "$TEXT" \
       '{model:$m, messages:[{role:"system",content:$s},{role:"user",content:$u}]}')
-    # some models (e.g. gpt-5.6-luna) reject non-default temperature — only
-    # send the field when the prompt file asks for one
-    [ -n "$TEMP" ] && REQ=$(jq --argjson t "$TEMP" '. + {temperature:$t}' <<<"$REQ")
+    # Some models (gpt-5.6-luna, gpt-6-luna, …) accept only the default
+    # temperature. Models that rejected it once are remembered here, so the
+    # wasted round-trip happens once per model instead of on every press.
+    NOTEMP_FILE="$STATE_DIR/models-without-temperature"
+    NOTEMP_KEY="$BASE|$MODEL"
+    if [ -n "$TEMP" ] && ! grep -qxF "$NOTEMP_KEY" "$NOTEMP_FILE" 2>/dev/null; then
+      REQ=$(jq --argjson t "$TEMP" '. + {temperature:$t}' <<<"$REQ")
+    fi
     openai_call() {  # POST $REQ, set RESP and ERR
       if [ -n "$KEY" ]; then
         RESP=$(curl -sS --max-time 60 "$BASE/chat/completions" \
@@ -169,12 +174,15 @@ case "$PROVIDER" in
         || die "Unparseable response from $BASE."
     }
     openai_call
-    # Newer models (gpt-5.6-luna, gpt-6-luna, …) accept only the default
-    # temperature. Retry once without it, so retargeting an alias to such a
-    # model never breaks prompts that set one.
-    if [ -n "$ERR" ] && [ -n "$TEMP" ] && printf '%s' "$ERR" | grep -qi 'temperature'; then
+    # First rejection for this model: retry without temperature, and if that
+    # works, remember the model so later presses skip the doomed request.
+    if [ -n "$ERR" ] && jq -e 'has("temperature")' <<<"$REQ" >/dev/null 2>&1 \
+       && printf '%s' "$ERR" | grep -qi 'temperature'; then
       REQ=$(jq 'del(.temperature)' <<<"$REQ")
       openai_call
+      if [ -z "$ERR" ]; then
+        mkdir -p "$STATE_DIR" 2>/dev/null && printf '%s\n' "$NOTEMP_KEY" >> "$NOTEMP_FILE" 2>/dev/null
+      fi
     fi
     [[ -z "$ERR" ]] || die "API: $ERR"
     RESULT=$(jq -r '.choices[0].message.content // empty' <<<"$RESP" 2>/dev/null)

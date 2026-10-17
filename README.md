@@ -91,7 +91,7 @@ echo "notes" | AITEXT_INSTRUCTION="to haiku" aitext ask   # scripted ask
 Each transform is a markdown file in `~/.config/aitext/prompts/`. Front matter, then `---`, then the system prompt:
 
 ```markdown
-model: gpt-5.4-nano
+model: cheap
 temperature: 0
 ---
 You are a copy editor. Fix spelling, grammar, and punctuation. Keep the
@@ -112,9 +112,11 @@ Edits take effect on the next keypress — no reinstall. Every prompt gets this 
 
 > Return ONLY the resulting text. No preamble, no explanation, no surrounding quotes, no code fences. Preserve the input language, line breaks, markdown, code blocks, URLs and proper nouns.
 
-**If a transform reports "no changes":** the model genuinely returned your text unchanged — the pipeline ran fine. Cheap models play it safe on badly garbled input (`gpt-5.4-nano` will capitalize `this a boea sstong` but won't guess at the broken words). Point that prompt at a stronger model if you want more: `aitext-prompts set grammar model gpt-5.6-luna`.
+**If a transform reports "no changes":** the model genuinely returned your text unchanged — the pipeline ran fine. On badly garbled input the models deliberately won't guess at broken words: `this a boea sstong` becomes `This is a boea sstong.` — grammar fixed, unknown words left alone rather than replaced with invented ones.
 
-**Models that reject `temperature`:** some models accept only the default (`gpt-5.6-luna` and `gpt-6-luna` are two). aitext handles this for you — if the API rejects the prompt's `temperature`, it retries once without it. So retargeting an alias (`aitext-config set model_cheap gpt-6-luna`) is safe even though most shipped prompts set a temperature; run `aitext-prompts doctor` afterwards to confirm.
+**Model aliases:** `cheap` defaults to `gpt-6-luna` and `smart` to `gpt-5.6-luna`; prompts with no `model:` line use `cheap`. Retarget either with one line — `aitext-config set model_cheap gpt-5.4-nano` — then run `aitext-prompts doctor` to confirm every mode still works.
+
+**Models that reject `temperature`:** some accept only the default (both luna models do). aitext handles it: the first time a model rejects the prompt's `temperature`, it retries without it and remembers that model, so later presses don't pay for the failed request. Models that accept `temperature` keep getting it.
 
 ## Adding a transform
 
@@ -136,9 +138,9 @@ Text Services need a selection, and a few apps (some Electron apps, some browser
 
 | Model | $/1M in / out | Per press | At 50/day |
 |---|---|---|---|
-| `gpt-6-luna` | $0.10 / $0.50 | $0.0002 | $0.26/mo |
+| `gpt-6-luna` (default `cheap`) | $0.10 / $0.50 | $0.0002 | $0.26/mo |
 | `gpt-5.4-nano` | $0.20 / $1.25 | $0.0004 | $0.62/mo |
-| `gpt-5.6-luna` | $0.20 / $1.20 | $0.0004 | $0.60/mo |
+| `gpt-5.6-luna` (default `smart`) | $0.20 / $1.20 | $0.0004 | $0.60/mo |
 | `claude-haiku-4-5` | $1 / $5 | $0.0017 | $2.55/mo |
 
 Nothing here is expensive enough to choose on price. Choose on instruction-following instead: the failure that actually costs you is a model ignoring "return only the text" and pasting *"Here's the corrected version:"* into your document.
