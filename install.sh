@@ -297,18 +297,28 @@ case "$PROVIDER" in
     # some models (e.g. gpt-5.6-luna) reject non-default temperature — only
     # send the field when the prompt file asks for one
     [ -n "$TEMP" ] && REQ=$(jq --argjson t "$TEMP" '. + {temperature:$t}' <<<"$REQ")
-    if [ -n "$KEY" ]; then
-      RESP=$(curl -sS --max-time 60 "$BASE/chat/completions" \
-        --config <(printf 'header = "Authorization: Bearer %s"\n' "$KEY") \
-        -H "Content-Type: application/json" -d "$REQ") \
-        || die "Network error talking to $BASE."
-    else
-      RESP=$(curl -sS --max-time 60 "$BASE/chat/completions" \
-        -H "Content-Type: application/json" -d "$REQ") \
-        || die "Network error talking to $BASE."
+    openai_call() {  # POST $REQ, set RESP and ERR
+      if [ -n "$KEY" ]; then
+        RESP=$(curl -sS --max-time 60 "$BASE/chat/completions" \
+          --config <(printf 'header = "Authorization: Bearer %s"\n' "$KEY") \
+          -H "Content-Type: application/json" -d "$REQ") \
+          || die "Network error talking to $BASE."
+      else
+        RESP=$(curl -sS --max-time 60 "$BASE/chat/completions" \
+          -H "Content-Type: application/json" -d "$REQ") \
+          || die "Network error talking to $BASE."
+      fi
+      ERR=$(jq -r 'if (.error|type)=="object" then .error.message elif (.error|type)=="string" then .error else empty end' <<<"$RESP" 2>/dev/null) \
+        || die "Unparseable response from $BASE."
+    }
+    openai_call
+    # Newer models (gpt-5.6-luna, gpt-6-luna, …) accept only the default
+    # temperature. Retry once without it, so retargeting an alias to such a
+    # model never breaks prompts that set one.
+    if [ -n "$ERR" ] && [ -n "$TEMP" ] && printf '%s' "$ERR" | grep -qi 'temperature'; then
+      REQ=$(jq 'del(.temperature)' <<<"$REQ")
+      openai_call
     fi
-    ERR=$(jq -r 'if (.error|type)=="object" then .error.message elif (.error|type)=="string" then .error else empty end' <<<"$RESP" 2>/dev/null) \
-      || die "Unparseable response from $BASE."
     [[ -z "$ERR" ]] || die "API: $ERR"
     RESULT=$(jq -r '.choices[0].message.content // empty' <<<"$RESP" 2>/dev/null)
     TIN=$(jq -r '.usage.prompt_tokens // 0' <<<"$RESP" 2>/dev/null); TIN=${TIN:-0}
@@ -728,8 +738,17 @@ cmd_set() {
   local other
   other=$("$PB" -c "Print :NSServicesStatus" "$PLIST" 2>/dev/null \
           | awk -v want="$(canon_key "$key")" '
-              / = Dict \{$/ { svc = $0; sub(/^ *(\(null\) - )?/, "", svc); sub(/( - runWorkflowAsService)? = Dict \{$/, "", svc) }
-              $1 == "key_equivalent" && canon($3) == want { print svc }
+              # depth 1 = NSServicesStatus, 2 = one service entry, 3+ = nested
+              # dicts such as presentation_modes, which System Settings writes
+              # and PlistBuddy may print before key_equivalent
+              /^ *Dict \{$/ { depth++; next }
+              / = Dict \{$/ {
+                depth++
+                if (depth == 2) { svc = $0; sub(/^ *(\(null\) - )?/, "", svc); sub(/( - runWorkflowAsService)? = Dict \{$/, "", svc) }
+                next
+              }
+              /^ *\}$/ { depth--; next }
+              depth == 2 && $1 == "key_equivalent" && canon($3) == want { print svc }
               function canon(k,  m, o) {
                 m = substr(k, 1, length(k) - 1); o = ""
                 if (index(m, "@")) o = o "@"; if (index(m, "$")) o = o "$"

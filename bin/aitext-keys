@@ -125,8 +125,17 @@ cmd_set() {
   local other
   other=$("$PB" -c "Print :NSServicesStatus" "$PLIST" 2>/dev/null \
           | awk -v want="$(canon_key "$key")" '
-              / = Dict \{$/ { svc = $0; sub(/^ *(\(null\) - )?/, "", svc); sub(/( - runWorkflowAsService)? = Dict \{$/, "", svc) }
-              $1 == "key_equivalent" && canon($3) == want { print svc }
+              # depth 1 = NSServicesStatus, 2 = one service entry, 3+ = nested
+              # dicts such as presentation_modes, which System Settings writes
+              # and PlistBuddy may print before key_equivalent
+              /^ *Dict \{$/ { depth++; next }
+              / = Dict \{$/ {
+                depth++
+                if (depth == 2) { svc = $0; sub(/^ *(\(null\) - )?/, "", svc); sub(/( - runWorkflowAsService)? = Dict \{$/, "", svc) }
+                next
+              }
+              /^ *\}$/ { depth--; next }
+              depth == 2 && $1 == "key_equivalent" && canon($3) == want { print svc }
               function canon(k,  m, o) {
                 m = substr(k, 1, length(k) - 1); o = ""
                 if (index(m, "@")) o = o "@"; if (index(m, "$")) o = o "$"

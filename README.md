@@ -114,7 +114,7 @@ Edits take effect on the next keypress — no reinstall. Every prompt gets this 
 
 **If a transform reports "no changes":** the model genuinely returned your text unchanged — the pipeline ran fine. Cheap models play it safe on badly garbled input (`gpt-5.4-nano` will capitalize `this a boea sstong` but won't guess at the broken words). Point that prompt at a stronger model if you want more: `aitext-prompts set grammar model gpt-5.6-luna`.
 
-**A model gotcha worth knowing:** some models reject a non-default `temperature` (`gpt-5.6-luna` and `gpt-6-luna` are two). If a transform silently returns your text unchanged with an alert about temperature, delete the `temperature:` line. This matters when retargeting an alias: `model_cheap` also drives every OpenAI prompt without a `model:` line, and most of those set a temperature.
+**Models that reject `temperature`:** some models accept only the default (`gpt-5.6-luna` and `gpt-6-luna` are two). aitext handles this for you — if the API rejects the prompt's `temperature`, it retries once without it. So retargeting an alias (`aitext-config set model_cheap gpt-6-luna`) is safe even though most shipped prompts set a temperature; run `aitext-prompts doctor` afterwards to confirm.
 
 ## Adding a transform
 
@@ -194,7 +194,7 @@ aitext-prompts set explain model claude-opus-5
 
 **Nothing appears under Services at all.** `/System/Library/CoreServices/pbs -flush`, then log out and back in. Electron apps (Slack, VS Code, Notion) cache the Services list longest.
 
-**The text comes back unchanged with an alert.** That's the safety net. The alert says why — usually a missing key, a model your account can't reach, or a `temperature` the model rejects. `aitext-prompts doctor` tests every mode in one go.
+**The text comes back unchanged with an alert.** That's the safety net. The alert says why — usually a missing key or a model your account can't reach. `aitext-prompts doctor` tests every mode in one go.
 
 **`jq not found`.** `brew install jq`. The dispatcher hardcodes a PATH because Automator runs with a minimal one.
 
